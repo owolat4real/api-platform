@@ -1,0 +1,66 @@
+services:
+  - type: web
+    name: careerstudiomax-api-platform
+    runtime: node
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /health
+    # No CI gate exists for this repo yet (unlike cs_fixed's — see its own
+    # render.yaml comment), so plain push-to-deploy is the right default
+    # here rather than disabling autoDeploy with nothing to re-enable it.
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      # developer-portal's Cloudflare Pages deploy + wherever else this
+      # API is called from (curl, SDKs, etc.)
+      - key: ALLOWED_ORIGINS
+        value: https://dev.careerstudiomax.com,https://careerstudiomax.com
+      # developer-portal's own deployed URL — used in welcome emails and
+      # error messages that point developers back to the pricing page.
+      - key: PORTAL_URL
+        value: https://dev.careerstudiomax.com
+
+      # ── Database ─────────────────────────────────────────────────
+      - key: MONGODB_URI
+        sync: false
+      - key: MONGODB_DB
+        value: careerlm_api
+
+      # ── CareerCamp AI Gateway (internal proxy target) ──────────────
+      # MUST point to careercamp-ai's own deployed Render URL, not
+      # localhost:3002 — that only resolves on whichever single machine
+      # is running this service locally. See cs_fixed/render.yaml's own
+      # CAREERCAMP_BASE_URL comment: deploy careercamp-ai as its own
+      # Render service first (it has its own render.yaml), then set this
+      # to its live URL.
+      - key: CAREERCAMP_URL
+        sync: false
+      - key: CS_TRANSFORMER_API_KEY
+        sync: false
+
+      # ── Email (developer API key delivery) ──────────────────────────
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: EMAIL_FROM
+        value: CareerStudioMax Developer Cloud <api@careerstudiomax.com>
+
+      # ── Stripe (paid developer tiers) ────────────────────────────────
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_PUBLISHABLE_KEY
+        sync: false
+      - key: STRIPE_PRICE_PRO
+        sync: false
+      - key: STRIPE_PRICE_PLUS
+        sync: false
+      - key: STRIPE_PRICE_ENTERPRISE
+        sync: false
