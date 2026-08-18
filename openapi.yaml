@@ -1,0 +1,513 @@
+openapi: 3.1.0
+info:
+  title: CareerLM API
+  description: |
+    The world's first career intelligence API. Build CV scorers, salary tools,
+    interview prep apps, and career chatbots in minutes.
+
+    **Free tier**: 1,000 requests/day, no credit card required.
+
+    **Base URL**: `https://api.careerstudiomax.com/v1`
+  version: 1.0.0
+  contact:
+    name: Career Studio Developer Support
+    email: api@careerstudiomax.com
+    url: https://careerstudiomax.com/api/docs
+
+servers:
+  - url: https://api.careerstudiomax.com/v1
+    description: Production
+  - url: http://localhost:3005/v1
+    description: Local development
+
+security:
+  - ApiKeyAuth: []
+
+tags:
+  - name: CV
+    description: CV scoring and optimisation
+  - name: Salary
+    description: Salary benchmarking across 196 countries
+  - name: Cover Letter
+    description: Cover letter generation in 15 modes
+  - name: Jobs
+    description: Job matching and gap analysis
+  - name: Interview
+    description: Interview question generation
+  - name: Skills
+    description: Skill gap analysis with learning ROI
+  - name: Chat
+    description: OpenAI-compatible career chat
+  - name: Context
+    description: Persistent career context across API calls
+  - name: Developer
+    description: Registration, key management, usage stats
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+      description: "Your CareerLM API key. Format: csk_live_v1_... or csk_free_v1_..."
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:    { type: string, example: missing_cv_text }
+            message: { type: string }
+            docs:    { type: string }
+
+    CVScoreResponse:
+      type: object
+      properties:
+        ats_score:    { type: integer, minimum: 0, maximum: 100, example: 87 }
+        grade:        { type: string, enum: ["A+","A","B+","B","C+","C","D","F"], example: "B+" }
+        keyword_match:
+          type: object
+          properties:
+            matched:  { type: array, items: { type: string }, example: ["Python","AWS"] }
+            missing:  { type: array, items: { type: string }, example: ["Kubernetes"] }
+            coverage: { type: integer, example: 73 }
+        section_scores:
+          type: object
+          properties:
+            summary:    { type: integer, example: 85 }
+            experience: { type: integer, example: 90 }
+            skills:     { type: integer, example: 75 }
+            education:  { type: integer, example: 80 }
+        top_suggestions: { type: array, items: { type: string } }
+        power_keywords:  { type: array, items: { type: string } }
+        verdict:         { type: string }
+        model:           { type: string, example: careerlm-standard }
+        request_id:      { type: string, example: req_a1b2c3d4e5f6g7h8 }
+
+    SalaryResponse:
+      type: object
+      properties:
+        role:     { type: string, example: "Data Engineer" }
+        location: { type: string, example: "Lagos, Nigeria" }
+        currency: { type: string, example: "NGN" }
+        salary_range:
+          type: object
+          properties:
+            low:            { type: integer, example: 4200000 }
+            median:         { type: integer, example: 6800000 }
+            high:           { type: integer, example: 11000000 }
+            top_10_percent: { type: integer, example: 16000000 }
+        usd_equivalent:
+          type: object
+          properties:
+            low:    { type: integer, example: 2800 }
+            median: { type: integer, example: 4500 }
+            high:   { type: integer, example: 7300 }
+        skill_premiums:
+          type: array
+          items:
+            type: object
+            properties:
+              skill:           { type: string }
+              premium_percent: { type: integer }
+        negotiation_target: { type: integer }
+        negotiation_script:  { type: string }
+        confidence:          { type: string, enum: [high, medium, low] }
+        model:               { type: string }
+        request_id:          { type: string }
+
+    JobMatchResponse:
+      type: object
+      properties:
+        overall_score: { type: integer, minimum: 0, maximum: 100 }
+        grade:         { type: string }
+        dimensions:
+          type: object
+          properties:
+            skills:          { type: integer }
+            experience:      { type: integer }
+            salary:          { type: integer }
+            location:        { type: integer }
+            culture_signals: { type: integer }
+        recommendation:       { type: string }
+        gaps:
+          type: array
+          items:
+            type: object
+            properties:
+              skill:       { type: string }
+              severity:    { type: string, enum: [critical, moderate, minor] }
+              learn_hours: { type: integer }
+        strengths:              { type: array, items: { type: string } }
+        interview_probability:  { type: number, minimum: 0, maximum: 1 }
+        apply_recommendation:   { type: string, enum: [apply_now, apply_with_caveats, skill_up_first, pass] }
+        model:                  { type: string }
+        request_id:             { type: string }
+
+paths:
+
+  /career/cv/score:
+    post:
+      tags: [CV]
+      summary: Score a CV against a job description
+      description: |
+        Returns a structured ATS score with keyword match, section breakdown, and improvement suggestions.
+        Available on **Free tier** (careerlm-flash model, 300 token budget).
+      operationId: scoreCV
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cv_text]
+              properties:
+                cv_text:         { type: string, description: Full CV text }
+                job_description: { type: string, description: Target job description }
+                target_country:  { type: string, default: GB, example: NG }
+                target_role:     { type: string, example: "Senior Software Engineer" }
+                options:
+                  type: object
+                  properties:
+                    include_suggestions: { type: boolean, default: true }
+                    include_keywords:    { type: boolean, default: true }
+                    format:             { type: string, enum: [detailed, summary], default: detailed }
+            example:
+              cv_text: "Ada Okonkwo\nSenior Python Developer\nEmail: ada@example.com\n\nExperience:\nSoftware Engineer at Paystack (2021-2024)\n..."
+              job_description: "We are hiring a Senior Python Engineer..."
+              target_country: "NG"
+      responses:
+        '200':
+          description: CV scored successfully
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CVScoreResponse' }
+        '400': { description: Missing cv_text }
+        '401': { description: Invalid or missing API key }
+        '429': { description: Daily limit or rate limit exceeded }
+
+  /career/cv/optimise:
+    post:
+      tags: [CV]
+      summary: Rewrite and optimise a CV
+      description: Requires **Starter tier** or above.
+      operationId: optimiseCV
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cv_text]
+              properties:
+                cv_text:         { type: string }
+                job_description: { type: string }
+                target_role:     { type: string }
+                target_country:  { type: string, default: GB }
+                options:
+                  type: object
+                  properties:
+                    rewrite_level:  { type: string, enum: [light, moderate, full], default: moderate }
+                    preserve_voice: { type: boolean, default: true }
+                    add_metrics:    { type: boolean, default: true }
+      responses:
+        '200': { description: CV optimised }
+        '403': { description: Feature requires Starter tier }
+
+  /career/salary/benchmark:
+    post:
+      tags: [Salary]
+      summary: Benchmark salary across 196 countries
+      description: |
+        Structured salary intelligence with PPP adjustment, skill premiums, and negotiation guidance.
+        Requires **Starter tier**.
+      operationId: benchmarkSalary
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role:             { type: string, example: "Data Engineer" }
+                country:          { type: string, default: GB, example: NG }
+                city:             { type: string, example: Lagos }
+                years_experience: { type: integer, default: 0 }
+                skills:           { type: array, items: { type: string } }
+                company_size:     { type: string, enum: [startup, mid, enterprise] }
+                options:
+                  type: object
+                  properties:
+                    currency:         { type: string, example: NGN }
+                    include_equity:   { type: boolean }
+                    include_benefits: { type: boolean }
+            example:
+              role: "Data Engineer"
+              country: "NG"
+              city: "Lagos"
+              years_experience: 4
+              skills: ["Python", "SQL", "dbt", "Spark"]
+              options: { currency: "NGN" }
+      responses:
+        '200':
+          description: Salary benchmark
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SalaryResponse' }
+        '403': { description: Requires Starter tier }
+
+  /career/cover-letter/generate:
+    post:
+      tags: [Cover Letter]
+      summary: Generate a cover letter in one of 15 professional modes
+      operationId: generateCoverLetter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cv_text:         { type: string }
+                job_description: { type: string }
+                company_name:    { type: string, example: Stripe }
+                candidate_name:  { type: string, example: "Ada Okonkwo" }
+                mode:            { type: integer, minimum: 1, maximum: 15, default: 1, description: "1=Achievement-led, 2=Insight-led, 3=Problem-solution, 4=Narrative, 5=Company-specific, 6=Question, 7=Bold, 8=Data, 9=Culture, 10=Transition, 11=Promotion, 12=Referral, 13=Remote, 14=Multilingual, 15=Executive" }
+                target_country:  { type: string, default: GB }
+                tone:            { type: string, enum: [formal, conversational, confident], default: confident }
+                options:
+                  type: object
+                  properties:
+                    word_limit: { type: integer, default: 280 }
+      responses:
+        '200': { description: Cover letter generated }
+        '403': { description: Requires Starter tier }
+
+  /career/job/match:
+    post:
+      tags: [Jobs]
+      summary: Score how well a candidate matches a job
+      operationId: matchJob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [candidate, job]
+              properties:
+                candidate:
+                  type: object
+                  properties:
+                    cv_text:            { type: string }
+                    skills:             { type: array, items: { type: string } }
+                    years_experience:   { type: integer }
+                    location:           { type: string }
+                    salary_expectation: { type: integer }
+                job:
+                  type: object
+                  properties:
+                    title:          { type: string }
+                    description:    { type: string }
+                    required_skills:{ type: array, items: { type: string } }
+                    salary_min:     { type: integer }
+                    salary_max:     { type: integer }
+                    location:       { type: string }
+                    remote:         { type: string, enum: [remote, hybrid, onsite] }
+      responses:
+        '200':
+          description: Match analysis
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobMatchResponse' }
+
+  /career/interview/questions:
+    post:
+      tags: [Interview]
+      summary: Generate tailored interview questions with model answers
+      operationId: generateInterviewQuestions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role:            { type: string, example: "Product Manager" }
+                company:         { type: string, example: Spotify }
+                interview_type:  { type: string, enum: [behavioural, technical, case, all], default: behavioural }
+                cv_text:         { type: string }
+                count:           { type: integer, default: 10, maximum: 20 }
+                include_answers: { type: boolean, default: true }
+                seniority:       { type: string, enum: [junior, mid, senior, director], default: mid }
+      responses:
+        '200': { description: Interview questions generated }
+
+  /career/skills/gap:
+    post:
+      tags: [Skills]
+      summary: Analyse skill gaps with learning ROI and timeline
+      operationId: analyseSkillGap
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target_role]
+              properties:
+                current_skills:    { type: array, items: { type: string }, example: ["Python","SQL","Excel"] }
+                target_role:       { type: string, example: "Senior Data Scientist" }
+                target_country:    { type: string, default: GB }
+                years_to_achieve:  { type: integer, default: 12 }
+                current_salary:    { type: integer }
+                options:
+                  type: object
+                  properties:
+                    include_resources: { type: boolean }
+                    include_roi:       { type: boolean }
+                    currency:          { type: string, default: GBP }
+      responses:
+        '200': { description: Skill gap analysis }
+
+  /career/chat/completions:
+    post:
+      tags: [Chat]
+      summary: Career-aware chat (OpenAI-compatible)
+      description: Drop-in replacement for OpenAI chat completions. Same request/response format.
+      operationId: chatCompletions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messages]
+              properties:
+                messages:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      role:    { type: string, enum: [user, assistant, system] }
+                      content: { type: string }
+                model:       { type: string, default: careerlm-standard }
+                max_tokens:  { type: integer, default: 800 }
+                temperature: { type: number, default: 0.7 }
+      responses:
+        '200': { description: Chat completion }
+
+  /career/context:
+    post:
+      tags: [Context]
+      summary: Save a career context (persistent memory)
+      description: |
+        World-first: persist career facts across API calls. Pass context_id in subsequent
+        calls so the model remembers the candidate's role, skills, and goals automatically.
+      operationId: saveContext
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                context_id: { type: string, description: "Omit to create a new context" }
+                profile:
+                  type: object
+                  properties:
+                    current_role:   { type: string }
+                    target_role:    { type: string }
+                    skills:         { type: array, items: { type: string } }
+                    country:        { type: string }
+                    salary_current: { type: integer }
+                    years_exp:      { type: integer }
+      responses:
+        '200': { description: Context saved }
+
+  /career/context/{id}:
+    get:
+      tags: [Context]
+      summary: Retrieve a career context
+      operationId: getContext
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Context retrieved }
+        '404': { description: Context not found }
+
+  /developer/register:
+    post:
+      tags: [Developer]
+      summary: Register as a developer and get a free API key
+      description: No credit card required. Key generated instantly.
+      security: []
+      operationId: registerDeveloper
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, name]
+              properties:
+                email:           { type: string, format: email }
+                name:            { type: string }
+                company:         { type: string }
+                github_username: { type: string }
+            example:
+              email: "ada@example.com"
+              name: "Ada Okonkwo"
+              company: "Paystack"
+      responses:
+        '201':
+          description: Developer registered, API key returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  developer_id: { type: string }
+                  api_key:      { type: string, description: "Shown ONCE — store immediately" }
+                  tier:         { type: string, example: FREE }
+                  daily_limit:  { type: integer, example: 1000 }
+                  docs:         { type: string }
+        '409': { description: Email already registered }
+
+  /developer/tiers:
+    get:
+      tags: [Developer]
+      summary: List available API tiers and pricing
+      security: []
+      operationId: listTiers
+      responses:
+        '200': { description: Tier list }
+
+  /developer/usage/{developerId}:
+    get:
+      tags: [Developer]
+      summary: Get usage statistics for a developer
+      operationId: getUsage
+      parameters:
+        - name: developerId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Usage statistics }
+
+  /health:
+    get:
+      tags: [Developer]
+      summary: API health check
+      security: []
+      operationId: healthCheck
+      responses:
+        '200': { description: OK }
