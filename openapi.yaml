@@ -1,13 +1,13 @@
 openapi: 3.1.0
 info:
-  title: CareerLM API
+  title: CareerStudioMax Developer Cloud
   description: |
     The world's first career intelligence API. Build CV scorers, salary tools,
     interview prep apps, and career chatbots in minutes.
 
     **Free tier**: 1,000 requests/day, no credit card required.
 
-    **Base URL**: `https://api.careerstudiomax.com/v1`
+    **Base URL**: `https://careerlm-api.careerstudiomax.com/v1`
   version: 1.0.0
   contact:
     name: Career Studio Developer Support
@@ -15,7 +15,7 @@ info:
     url: https://careerstudiomax.com/api/docs
 
 servers:
-  - url: https://api.careerstudiomax.com/v1
+  - url: https://careerlm-api.careerstudiomax.com/v1
     description: Production
   - url: http://localhost:3005/v1
     description: Local development
@@ -312,7 +312,7 @@ paths:
                   properties:
                     title:          { type: string }
                     description:    { type: string }
-                    required_skills:{ type: array, items: { type: string } }
+                    required_skills: { type: array, items: { type: string } }
                     salary_min:     { type: integer }
                     salary_max:     { type: integer }
                     location:       { type: string }
