@@ -8,6 +8,31 @@ const axios = require('axios');
 const CAMP_URL = process.env.CAREERCAMP_URL || 'http://localhost:3002';
 const CAMP_KEY = process.env.CAREERCAMP_INTERNAL_KEY || process.env.CS_TRANSFORMER_API_KEY || '';
 
+// Live-caught (2026-08-19): careercamp-ai's /v1/camp/:featureId has no JSON
+// extraction step at all for the standard (non-proxy-scored) pipeline —
+// result.content is returned completely raw, whatever the model emitted.
+// A reasoning-capable model answering a schema-requesting feature (like
+// cv_score) emits its full <think>...</think> block BEFORE the JSON,
+// which every caller here documents as "content is a JSON string you
+// parse yourself" -- but a <think>-prefixed string isn't valid JSON, so
+// every consumer's JSON.parse(content) would throw. Scoped to this
+// proxy (api-platform's own layer) rather than the shared careercamp-ai
+// gateway, which has other consumers this fix shouldn't risk touching.
+// Only applied when `schema` is set — plain-text features (chat,
+// cover-letter without a schema) are untouched.
+function _stripThinkBlock(text) {
+  return String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+}
+function _extractJSONText(raw) {
+  const stripped = _stripThinkBlock(raw)
+    .replace(/^```json\s*/im, '').replace(/^```\s*/im, '').replace(/```\s*$/m, '').trim();
+  try { JSON.parse(stripped); return stripped; } catch (_) {}
+  // Model added prose around the JSON — grab the outermost {...} or [...]
+  const match = stripped.match(/[{\[][\s\S]*[}\]]/);
+  if (match) { try { JSON.parse(match[0]); return match[0]; } catch (_) {} }
+  return null;
+}
+
 async function callCareerCamp({ feature_id, user_input, user_id, messages = [], schema, stream = false }, apiKey) {
   const maxTokens = apiKey?.maxTokens || 1000;
   try {
@@ -35,8 +60,20 @@ async function callCareerCamp({ feature_id, user_input, user_id, messages = [], 
     const data = resp.data;
     if (!data?.content) throw new Error('Empty response from CareerCamp gateway');
 
+    let content = data.content;
+    if (schema) {
+      const cleaned = _extractJSONText(content);
+      if (!cleaned) {
+        const err  = new Error('The AI engine returned an unusable result for this request — please retry');
+        err.code   = 'model_unavailable';
+        err.status = 503;
+        throw err;
+      }
+      content = cleaned;
+    }
+
     return {
-      content:      data.content,
+      content,
       model:        data.model    || 'cs-sonnet',
       piiProtected: data.piiProtected || false,
       usedFallback: data.usedFallback || false,
