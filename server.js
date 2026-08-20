@@ -15,6 +15,7 @@ const { connect } = require('./db/connection');
 
 const careerRoutes    = require('./routes/careerRoutes');
 const developerRoutes = require('./routes/developerRoutes');
+const cqlRoutes       = require('./routes/cqlRoutes');
 
 const app  = express();
 const PORT = process.env.PORT || 3005;
@@ -41,6 +42,7 @@ app.use(rateLimit({
 // ── Routes ─────────────────────────────────────────────────
 app.use('/v1/career',    careerRoutes);
 app.use('/v1/developer', developerRoutes);
+app.use('/v1/cql',       cqlRoutes);
 
 // ── Public endpoints ───────────────────────────────────────
 app.get('/health', (req, res) => {
@@ -64,6 +66,7 @@ app.get('/', (req, res) => {
       skill_gap:         'POST /v1/career/skills/gap',
       chat:              'POST /v1/career/chat/completions',
       context:           'POST /v1/career/context',
+      cql_execute:       'POST /v1/cql/execute',
     },
     free_tier:   '1,000 requests/day — no credit card required',
     auth:        'X-Api-Key: csk_free_v1_...',

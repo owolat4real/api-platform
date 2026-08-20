@@ -2,6 +2,7 @@
   "name": "careerlm-api-platform",
   "version": "1.0.0",
   "description": "CareerLM Public API Platform — world's first career intelligence API",
+  "author": "CloudooAI Solution",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -17,6 +18,7 @@
     "mongodb": "^6.5.0",
     "morgan": "^1.10.0",
     "nodemailer": "^6.9.13",
+    "peggy": "^5.1.0",
     "stripe": "^14.20.0"
   },
   "devDependencies": {
