@@ -2,7 +2,7 @@
 const express  = require('express');
 const crypto   = require('crypto');
 const router   = express.Router();
-const { KeyManager, API_TIERS } = require('../keys/keyManager');
+const { KeyManager, API_TIERS, MODEL_DISPLAY_NAMES } = require('../keys/keyManager');
 const { getDB } = require('../db/connection');
 
 // Only create stripe if key is configured — avoids startup crash in dev without billing
@@ -77,7 +77,7 @@ router.post('/register', async (req, res) => {
     message:      'Welcome to CareerStudioMax Developer Cloud. Your free key is ready — save it now, shown once only.',
     docs:         'https://careerstudiomax.com/api/docs/quickstart',
     daily_limit:  API_TIERS.FREE.daily_requests,
-    models:       API_TIERS.FREE.models.map(m => ({ 'cs-haiku': 'careerlm-flash' })[m] || m),
+    models:       API_TIERS.FREE.models.map(m => MODEL_DISPLAY_NAMES[m] || m),
   });
 });
 
@@ -343,7 +343,7 @@ router.get('/usage/:developerId', async (req, res) => {
     reset_at:    'midnight UTC',
     recent_calls: (activeKey?.recentCalls || []).slice(-10).map(c => ({
       ...c,
-      model: ({ 'cs-haiku': 'careerlm-flash', 'cs-sonnet': 'careerlm-standard', 'cs-opus': 'careerlm-deep' })[c.model] || c.model,
+      model: MODEL_DISPLAY_NAMES[c.model] || c.model,
     })),
   });
 });
@@ -357,7 +357,7 @@ router.get('/tiers', (req, res) => {
     price_monthly:  t.price === 0 ? 'Free forever' : `$${t.price}/month`,
     daily_requests: t.daily_requests === Infinity ? 'Unlimited' : t.daily_requests.toLocaleString(),
     rpm:            t.rpm,
-    models:         t.models.map(m => ({ 'cs-haiku': 'careerlm-flash', 'cs-sonnet': 'careerlm-standard', 'cs-opus': 'careerlm-deep' })[m] || m),
+    models:         t.models.map(m => MODEL_DISPLAY_NAMES[m] || m),
     features:       t.features,
     support:        t.support,
   }));

@@ -4,6 +4,25 @@ const nodemailer  = require('nodemailer');
 const { getDB }   = require('../db/connection');
 const PORTAL_URL  = process.env.PORTAL_URL || 'https://careerstudiomax.com';
 
+// Renamed 2026-08-19 (same directive as Transformer's rename in
+// cs_fixed/routes/transformer.js): cs-haiku/cs-sonnet/cs-opus ->
+// cs-adeife/cs-ademide/cs-demilade. This `models` array is informational
+// only (never checked against a request — developers here can't pick a
+// model, every endpoint is feature-routed, see careerRoutes.js), so the
+// rename is display-identifier-only. Old names are kept recognized
+// everywhere they might still surface: existing api_keys.models arrays
+// already persisted with the old names, and CareerCamp's own gateway
+// (careercamp-ai), which hasn't renamed its Modelfiles and still reports
+// data.model as cs-haiku/cs-sonnet/cs-opus at request time.
+const MODEL_DISPLAY_NAMES = {
+  'cs-adeife':   'careerlm-flash',
+  'cs-ademide':  'careerlm-standard',
+  'cs-demilade': 'careerlm-deep',
+  'cs-haiku':    'careerlm-flash',  // old name, still returned live by careercamp-ai
+  'cs-sonnet':   'careerlm-standard',
+  'cs-opus':     'careerlm-deep',
+};
+
 /* ── TIER CONFIG ──────────────────────────────────────────────
    Single source of truth for all tier limits and features.    */
 const API_TIERS = {
@@ -12,7 +31,7 @@ const API_TIERS = {
     price:          0,
     daily_requests: 1000,
     rpm:            10,
-    models:         ['cs-haiku'],
+    models:         ['cs-adeife'],
     features:       ['basic_career', 'cv_score', 'quick_advice'],
     max_tokens:     300,
     support:        'community',
@@ -22,7 +41,7 @@ const API_TIERS = {
     price:          19,
     daily_requests: 10000,
     rpm:            60,
-    models:         ['cs-haiku', 'cs-sonnet'],
+    models:         ['cs-adeife', 'cs-ademide'],
     features:       ['all_career', 'cv_optimise', 'cover_letter', 'interview_prep', 'salary_bench'],
     max_tokens:     1500,
     support:        'email',
@@ -32,7 +51,7 @@ const API_TIERS = {
     price:          49,
     daily_requests: 100000,
     rpm:            200,
-    models:         ['cs-haiku', 'cs-sonnet', 'cs-opus'],
+    models:         ['cs-adeife', 'cs-ademide', 'cs-demilade'],
     features:       ['all_career', 'all_features', 'batch_processing', 'webhooks', 'custom_system_prompts'],
     max_tokens:     2048,
     support:        'priority_email',
@@ -42,7 +61,7 @@ const API_TIERS = {
     price:          199,
     daily_requests: Infinity,
     rpm:            1000,
-    models:         ['cs-haiku', 'cs-sonnet', 'cs-opus'],
+    models:         ['cs-adeife', 'cs-ademide', 'cs-demilade'],
     features:       ['all', 'fine_tuning', 'private_deployment', 'sla_99_9', 'dedicated_support', 'custom_models'],
     max_tokens:     4096,
     support:        'dedicated_slack',
@@ -224,4 +243,4 @@ class KeyManager {
   }
 }
 
-module.exports = { KeyManager, API_TIERS };
+module.exports = { KeyManager, API_TIERS, MODEL_DISPLAY_NAMES };

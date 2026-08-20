@@ -7,10 +7,11 @@ const express = require('express');
 const crypto  = require('crypto');
 const router  = express.Router();
 
-const { authMiddleware } = require('../middleware/auth');
-const { rpmLimiter }     = require('../middleware/rateLimit');
-const { callCareerCamp } = require('../proxy/campProxy');
-const { getDB }          = require('../db/connection');
+const { authMiddleware }    = require('../middleware/auth');
+const { rpmLimiter }        = require('../middleware/rateLimit');
+const { callCareerCamp }    = require('../proxy/campProxy');
+const { getDB }             = require('../db/connection');
+const { MODEL_DISPLAY_NAMES } = require('../keys/keyManager');
 
 router.use(authMiddleware);
 router.use(rpmLimiter);
@@ -19,7 +20,7 @@ router.use(rpmLimiter);
 const req_id = () => 'req_' + crypto.randomBytes(8).toString('hex');
 
 function maskModel(model) {
-  return ({ 'cs-haiku': 'careerlm-flash', 'cs-sonnet': 'careerlm-standard', 'cs-opus': 'careerlm-deep' })[model] || 'careerlm-standard';
+  return MODEL_DISPLAY_NAMES[model] || 'careerlm-standard';
 }
 
 const PORTAL_URL = process.env.PORTAL_URL || 'https://careerstudiomax.com';
