@@ -100,7 +100,7 @@ const score = await client.cv.score(cvText, jobDescription)
 console.log(score.ats_score)  // 87</pre>
           <p><a href="https://careerstudiomax.com/api/docs/quickstart" style="color:#6366f1">Full quickstart guide →</a></p>
           <hr style="border:1px solid #eee;margin:24px 0">
-          <p style="color:#888;font-size:12px">CareerStudioMax Developer Cloud — The world's first career intelligence API<br>
+          <p style="color:#888;font-size:12px">CareerStudioMax Developer Cloud — a career intelligence API<br>
           Free tier: 1,000 requests/day forever. <a href="${PORTAL_URL}/pricing" style="color:#6366f1">Upgrade anytime →</a></p>
         </div>`,
     });

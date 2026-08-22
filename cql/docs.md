@@ -93,10 +93,10 @@ CareerStudioMax surface" language might eventually support:
   needs structured `candidate`/`job` objects that don't fit cleanly into
   CQL's simple noun-and-named-argument model without adding object-literal
   syntax, which is a bigger addition than this phase scoped.
-- **`chat` and `context`** (the OpenAI-compatible chat endpoint and
-  persistent career-context memory) aren't wired into CQL yet — they don't
-  fit the "score → act on the result" pipeline shape the initial verb set
-  was built around.
+- **`chat` and `context`** (the chat-completions endpoint and persistent
+  career-context memory) aren't wired into CQL yet — they don't fit the
+  "score → act on the result" pipeline shape the initial verb set was
+  built around.
 
 None of these are permanently out of scope — they're candidates for a
 future increment, each evaluated on its own rather than bundled in here.

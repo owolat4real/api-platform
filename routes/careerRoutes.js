@@ -27,8 +27,26 @@ const PORTAL_URL = process.env.PORTAL_URL || 'https://careerstudiomax.com';
 
 function tier(apiKey, feature, res) {
   if (apiKey.features.includes('all') || apiKey.features.includes('all_career') || apiKey.features.includes(feature)) return true;
-  res.status(403).json({ error: { code: 'feature_not_available', message: `${feature} requires Starter tier or above`, upgrade: `${PORTAL_URL}/pricing` } });
+  res.status(403).json({ error: { code: 'feature_not_available', message: `${feature} is not included in your current plan`, upgrade: `${PORTAL_URL}/pricing` } });
   return false;
+}
+
+// ── CONTEXT RESOLUTION — this is what actually backs the "pass
+// context_id to every endpoint for automatic personalisation" claim:
+// explicit request fields always win, context only fills in whatever
+// the caller didn't pass this time. Previously context_id was accepted
+// by these routes but never looked up at all (live-confirmed 2026-08-22).
+async function _resolveContext(req, fields) {
+  const { context_id } = req.body;
+  if (!context_id) return {};
+  try {
+    const db  = getDB();
+    const ctx = await db.collection('career_contexts').findOne({ contextId: context_id, developerId: req.apiKey.developerId });
+    if (!ctx) return {};
+    const out = {};
+    for (const f of fields) if (ctx[f] !== undefined && ctx[f] !== null) out[f] = ctx[f];
+    return out;
+  } catch (_) { return {}; }
 }
 
 function err(res, e) {
@@ -45,8 +63,8 @@ function done(res, result) {
 }
 
 /* ── PROMPT BUILDERS ─────────────────────────────────────── */
-function pCVScore(cvText, jd, role, opts = {}) {
-  return `Score this CV for ATS optimisation${role ? ` targeting: ${role}` : ''}.
+function pCVScore(cvText, jd, role, country, opts = {}) {
+  return `Score this CV for ATS optimisation${role ? ` targeting: ${role}` : ''}${country ? ` in the ${country} job market` : ''}.
 
 CV:
 ${cvText.slice(0, 4000)}
@@ -217,12 +235,15 @@ Return valid JSON:
    ENDPOINT 1 — CV SCORE
 ══════════════════════════════════════════════════════════ */
 router.post('/cv/score', async (req, res) => {
-  const { cv_text, job_description, target_country = 'GB', target_role, options = {} } = req.body;
+  const { cv_text, job_description, target_country, target_role, options = {} } = req.body;
   if (!cv_text) return res.status(400).json({ error: { code: 'missing_cv_text', message: 'cv_text is required' } });
   try {
+    const ctx = await _resolveContext(req, ['target_role', 'target_country']);
+    const role = target_role || ctx.target_role;
+    const country = target_country || ctx.target_country || 'GB';
     const result = await callCareerCamp({
       feature_id: 'resume_scorer',
-      user_input: pCVScore(cv_text, job_description, target_role, options),
+      user_input: pCVScore(cv_text, job_description, role, country, options),
       user_id:    req.apiKey.developerId,
       schema:     'cv_score',
     }, req.apiKey);
@@ -235,13 +256,16 @@ router.post('/cv/score', async (req, res) => {
    ENDPOINT 2 — CV OPTIMISE
 ══════════════════════════════════════════════════════════ */
 router.post('/cv/optimise', async (req, res) => {
-  const { cv_text, job_description, target_role, target_country = 'GB', options = {} } = req.body;
+  const { cv_text, job_description, target_role, target_country, options = {} } = req.body;
   if (!cv_text) return res.status(400).json({ error: { code: 'missing_cv_text', message: 'cv_text is required' } });
   if (!tier(req.apiKey, 'cv_optimise', res)) return;
   try {
+    const ctx = await _resolveContext(req, ['target_role', 'target_country']);
+    const role = target_role || ctx.target_role;
+    const country = target_country || ctx.target_country || 'GB';
     const result = await callCareerCamp({
       feature_id: 'resume_auto_optimiser',
-      user_input: pCVOptimise(cv_text, job_description, target_role, target_country, options),
+      user_input: pCVOptimise(cv_text, job_description, role, country, options),
       user_id:    req.apiKey.developerId,
       schema:     'cv_rewrite',
     }, req.apiKey);
@@ -254,13 +278,16 @@ router.post('/cv/optimise', async (req, res) => {
    ENDPOINT 3 — SALARY BENCHMARK
 ══════════════════════════════════════════════════════════ */
 router.post('/salary/benchmark', async (req, res) => {
-  const { role, country = 'GB', city, years_experience = 0, skills = [], company_size, options = {} } = req.body;
-  if (!role) return res.status(400).json({ error: { code: 'missing_role', message: 'role is required' } });
+  const { role, country, city, years_experience = 0, skills = [], company_size, options = {} } = req.body;
   if (!tier(req.apiKey, 'salary_bench', res)) return;
   try {
+    const ctx = await _resolveContext(req, ['target_role', 'target_country']);
+    const resolvedRole    = role || ctx.target_role;
+    const resolvedCountry = country || ctx.target_country || 'GB';
+    if (!resolvedRole) return res.status(400).json({ error: { code: 'missing_role', message: 'role is required (directly, or via a context_id whose saved profile includes target_role)' } });
     const result = await callCareerCamp({
       feature_id: 'salary_benchmark',
-      user_input: pSalary(role, country, city, years_experience, skills, company_size, options),
+      user_input: pSalary(resolvedRole, resolvedCountry, city, years_experience, skills, company_size, options),
       user_id:    req.apiKey.developerId,
       schema:     'salary_report',
     }, req.apiKey);
@@ -273,14 +300,16 @@ router.post('/salary/benchmark', async (req, res) => {
    ENDPOINT 4 — COVER LETTER (15 modes)
 ══════════════════════════════════════════════════════════ */
 router.post('/cover-letter/generate', async (req, res) => {
-  const { cv_text, job_description, company_name, candidate_name, mode = 1, target_country = 'GB', tone = 'confident', options = {} } = req.body;
+  const { cv_text, job_description, company_name, candidate_name, mode = 1, target_country, tone = 'confident', options = {} } = req.body;
   if (!tier(req.apiKey, 'cover_letter', res)) return;
   const modeNum   = Math.min(15, Math.max(1, parseInt(mode) || 1));
   const featureId = `cover_letter_m${String(modeNum).padStart(2, '0')}`;
   try {
+    const ctx     = await _resolveContext(req, ['target_country']);
+    const country = target_country || ctx.target_country || 'GB';
     const result = await callCareerCamp({
       feature_id: featureId,
-      user_input: pCoverLetter(cv_text, job_description, company_name, candidate_name, modeNum, target_country, tone, options),
+      user_input: pCoverLetter(cv_text, job_description, company_name, candidate_name, modeNum, country, tone, options),
       user_id:    req.apiKey.developerId,
     }, req.apiKey);
     done(res, result);
@@ -329,12 +358,15 @@ router.post('/interview/questions', async (req, res) => {
    ENDPOINT 7 — SKILL GAP ANALYSIS
 ══════════════════════════════════════════════════════════ */
 router.post('/skills/gap', async (req, res) => {
-  const { current_skills = [], target_role, target_country = 'GB', years_to_achieve = 12, current_salary, options = {} } = req.body;
-  if (!target_role) return res.status(400).json({ error: { code: 'missing_target_role', message: 'target_role is required' } });
+  const { current_skills = [], target_role, target_country, years_to_achieve = 12, current_salary, options = {} } = req.body;
   try {
+    const ctx  = await _resolveContext(req, ['target_role', 'target_country']);
+    const role = target_role || ctx.target_role;
+    const country = target_country || ctx.target_country || 'GB';
+    if (!role) return res.status(400).json({ error: { code: 'missing_target_role', message: 'target_role is required (directly, or via a context_id whose saved profile includes target_role)' } });
     const result = await callCareerCamp({
       feature_id: 'cv_gap_detector',
-      user_input: pSkillGap(current_skills, target_role, target_country, years_to_achieve, current_salary, options),
+      user_input: pSkillGap(current_skills, role, country, years_to_achieve, current_salary, options),
       user_id:    req.apiKey.developerId,
       schema:     'gap_report',
     }, req.apiKey);
