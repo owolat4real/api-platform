@@ -3,7 +3,7 @@ const express  = require('express');
 const crypto   = require('crypto');
 const router   = express.Router();
 const { KeyManager, API_TIERS, MODEL_DISPLAY_NAMES } = require('../keys/keyManager');
-const { getDB } = require('../db/connection');
+const { getDB, getAuditDB } = require('../db/connection');
 
 // Only create stripe if key is configured — avoids startup crash in dev without billing
 const stripe = process.env.STRIPE_SECRET_KEY && !process.env.STRIPE_SECRET_KEY.includes('your-')
@@ -69,6 +69,18 @@ router.post('/register', async (req, res) => {
   });
 
   const { key } = await KeyManager.create({ developerId, tier: 'FREE', name: 'Default Key' });
+
+  // Writes into the SAME admin audit log the main platform's dashboard
+  // already reads (cs_fixed's AuditLog model, same Atlas cluster,
+  // "careerstudio" db) -- see db/connection.js's getAuditDB() -- so a new
+  // Developer Cloud signup shows up in the one place admin already looks
+  // for developer-platform activity, not invisible outside this service.
+  getAuditDB().collection('auditlogs').insertOne({
+    actorEmail: email.toLowerCase(), actorName: name, action: 'developer.signup.apiplatform',
+    category: 'auth', resource: 'developers', resourceId: developerId,
+    detail: { company: company || null, tier: 'FREE' },
+    result: 'success', createdAt: new Date(), updatedAt: new Date(),
+  }).catch(() => {});
 
   res.status(201).json({
     developer_id: developerId,
