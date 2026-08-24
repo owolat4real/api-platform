@@ -199,12 +199,27 @@ router.post('/upgrade', async (req, res) => {
     // exists (e.g. a prior upgrade or a previous incomplete attempt)
     // instead of creating a fresh one every call.
     let customerId = developer.stripeCustomerId;
-    if (customerId) {
-      await stripe.paymentMethods.attach(payment_method_id, { customer: customerId }).catch(() => {});
-    } else {
+    if (!customerId) {
       const customer = await stripe.customers.create({ email: developer.email, metadata: { developer_id } });
       customerId = customer.id;
+    }
+    // Real, live-caught bug (2026-08-24): this attach() call used to swallow
+    // its own failure with `.catch(() => {})` on the reuse-existing-customer
+    // path. A genuinely failed attach (confirmed live: a developer's card
+    // was declined -- card_declined/test_mode_live_card, a real Stripe
+    // decline, not a platform bug in itself) went silent, execution fell
+    // through to customers.update() below trying to set a default_payment_
+    // method that was never actually attached, THAT threw Stripe's raw
+    // "customer does not have a payment method" error, and the generic
+    // catch block at the bottom of this handler leaked that raw text
+    // straight to the user. Now caught here, specifically, before any
+    // customer/subscription state is touched.
+    try {
       await stripe.paymentMethods.attach(payment_method_id, { customer: customerId });
+    } catch (attachErr) {
+      console.error('[billing] paymentMethods.attach failed:', attachErr.type, attachErr.code, attachErr.message);
+      const declineMessage = attachErr.type === 'StripeCardError' ? attachErr.message : 'We couldn\'t save your card. Please check your card details and try again.';
+      return res.status(402).json({ error: { code: 'payment_method_attach_failed', message: declineMessage } });
     }
     await stripe.customers.update(customerId, { invoice_settings: { default_payment_method: payment_method_id } });
 
@@ -260,8 +275,16 @@ router.post('/upgrade', async (req, res) => {
     await _applyTierUpgrade(db, developer_id, tier, customerId, subscription.id);
     res.json({ status: 'upgraded', tier, features: tierConfig.features, daily_limit: tierConfig.daily_requests, price: `$${tierConfig.price}/month` });
   } catch (e) {
-    console.error('[billing]', e.message);
-    res.status(500).json({ error: { code: 'billing_error', message: e.message } });
+    // Real gap: e.message was sent to the client raw for every error type,
+    // including Stripe's internal-object-state errors (e.g. "The customer
+    // does not have a payment method with the ID pm_..." from
+    // customers.update()/subscriptions.create()) -- never meant for an
+    // end user. Only StripeCardError messages (declines) are actually
+    // written to be user-facing; everything else gets a safe generic
+    // message, with full detail still logged server-side.
+    console.error('[billing]', e.type || e.name, e.code, e.message);
+    const safeMessage = e.type === 'StripeCardError' ? e.message : 'Something went wrong processing your upgrade. Your card was not charged.';
+    res.status(e.type === 'StripeCardError' ? 402 : 500).json({ error: { code: 'billing_error', message: safeMessage } });
   }
 });
 
@@ -296,8 +319,9 @@ router.post('/upgrade/confirm', async (req, res) => {
     await _applyTierUpgrade(db, developer_id, tier, subscription.customer, subscription.id);
     res.json({ status: 'upgraded', tier, features: tierConfig.features, daily_limit: tierConfig.daily_requests, price: `$${tierConfig.price}/month` });
   } catch (e) {
-    console.error('[billing confirm]', e.message);
-    res.status(500).json({ error: { code: 'billing_error', message: e.message } });
+    console.error('[billing confirm]', e.type || e.name, e.code, e.message);
+    const safeMessage = e.type === 'StripeCardError' ? e.message : 'Something went wrong confirming your upgrade. Please contact support if this persists.';
+    res.status(e.type === 'StripeCardError' ? 402 : 500).json({ error: { code: 'billing_error', message: safeMessage } });
   }
 });
 
