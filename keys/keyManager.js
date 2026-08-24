@@ -124,6 +124,39 @@ console.log(score.ats_score)  // 87</pre>
   }
 }
 
+/* ── ADMIN ALERT ───────────────────────────────────────────────
+   Real, honest gap found (2026-08-24): this service's new-signup event
+   only ever reached the shared admin audit log (routes/developerRoutes.js's
+   getAuditDB() write) -- a passive record admin has to go check. The four
+   OTHER developer platforms (cs_fixed's Transformer/CSTM-2/CAMP/CSVM auth
+   routes) all additionally fire a real-time Telegram+email ping via
+   services/adminAlert.js on every signup. This service has no Telegram
+   credentials configured and is a separate codebase from services/
+   adminAlert.js, so it can't reuse that module directly -- this is the
+   email-only equivalent, reusing the exact SMTP transport sendWelcomeEmail
+   above already uses, with the same ADMIN_EMAIL/FOUNDER_EMAIL fallback
+   chain services/adminAlert.js uses in the other codebase, so behavior
+   matches even though the code can't be shared. */
+async function alertAdmin(subject, detail) {
+  if (!process.env.SMTP_HOST) return;
+  const to = process.env.ADMIN_EMAIL || process.env.FOUNDER_EMAIL || 'owo1232011@gmail.com';
+  try {
+    const transport = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT) || 587,
+      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    });
+    await transport.sendMail({
+      from:    _canonicalDomain(process.env.EMAIL_FROM, 'CareerStudioMax Developer Cloud <api@careerstudiomax.com>'),
+      to,
+      subject: `🚨 ${subject}`,
+      html:    `<p>${detail.replace(/\n/g, '<br>')}</p><p style="color:#888;font-size:12px">env: ${process.env.NODE_ENV || 'development'}</p>`,
+    });
+  } catch (e) {
+    console.warn('[KeyManager] Admin alert skipped:', e.message?.slice(0, 80));
+  }
+}
+
 class KeyManager {
 
   /* ── GENERATE ─────────────────────────────────────────────── */
@@ -258,4 +291,4 @@ class KeyManager {
   }
 }
 
-module.exports = { KeyManager, API_TIERS, MODEL_DISPLAY_NAMES };
+module.exports = { KeyManager, API_TIERS, MODEL_DISPLAY_NAMES, alertAdmin };

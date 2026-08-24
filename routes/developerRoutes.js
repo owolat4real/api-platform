@@ -2,7 +2,7 @@
 const express  = require('express');
 const crypto   = require('crypto');
 const router   = express.Router();
-const { KeyManager, API_TIERS, MODEL_DISPLAY_NAMES } = require('../keys/keyManager');
+const { KeyManager, API_TIERS, MODEL_DISPLAY_NAMES, alertAdmin } = require('../keys/keyManager');
 const { getDB, getAuditDB } = require('../db/connection');
 
 // Only create stripe if key is configured — avoids startup crash in dev without billing
@@ -81,6 +81,15 @@ router.post('/register', async (req, res) => {
     detail: { company: company || null, tier: 'FREE' },
     result: 'success', createdAt: new Date(), updatedAt: new Date(),
   }).catch(() => {});
+
+  // Real-time ping to match the other four developer platforms
+  // (Transformer/CSTM-2/CAMP/CSVM), which all alert admin immediately on
+  // signup via services/adminAlert.js -- this service had only the
+  // passive audit-log write above until now, a real inconsistency.
+  alertAdmin(
+    `New Developer Cloud signup: ${email}`,
+    `Name: ${name}\nCompany: ${company || 'not provided'}\nDeveloper ID: ${developerId}`,
+  ).catch(() => {});
 
   res.status(201).json({
     developer_id: developerId,
