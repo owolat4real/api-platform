@@ -2,7 +2,22 @@
 const crypto      = require('crypto');
 const nodemailer  = require('nodemailer');
 const { getDB }   = require('../db/connection');
-const PORTAL_URL  = process.env.PORTAL_URL || 'https://careerstudiomax.com';
+
+// Live-caught (2026-08-24): EMAIL_FROM was set directly in this service's
+// own Render dashboard to "CareerStudioMax Developer Cloud
+// <api@careerstudio.ai>" -- the platform's retired domain (careerstudiomax.com
+// is canonical everywhere else) -- silently sending every welcome email
+// from an address real mail providers have no reason to trust. Same
+// class of bug cs_fixed's config/validateEnv.js has a guard for; this
+// mirrors that guard's scope (fix the stored value directly, but also
+// never trust it blindly again) for this separate, standalone repo.
+function _canonicalDomain(val, fallback) {
+  if (!val) return fallback;
+  const fixed = val.replace(/careerstudio\.ai|career-studio\.ai/gi, 'careerstudiomax.com');
+  if (fixed !== val) console.error(`\n🚨 DOMAIN MISCONFIGURATION AUTO-CORRECTED: was "${val}", using "${fixed}" instead. Fix the real stored value in Render's dashboard.\n`);
+  return fixed;
+}
+const PORTAL_URL = _canonicalDomain(process.env.PORTAL_URL, 'https://careerstudiomax.com');
 
 // Renamed 2026-08-19 (same directive as Transformer's rename in
 // cs_fixed/routes/transformer.js): cs-haiku/cs-sonnet/cs-opus ->
@@ -81,7 +96,7 @@ async function sendWelcomeEmail(developerId, apiKey, tier) {
       auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
     });
     await transport.sendMail({
-      from:    process.env.EMAIL_FROM || 'CareerStudioMax Developer Cloud <api@careerstudiomax.com>',
+      from:    _canonicalDomain(process.env.EMAIL_FROM, 'CareerStudioMax Developer Cloud <api@careerstudiomax.com>'),
       to:      dev.email,
       subject: 'Your CareerStudioMax Developer Cloud API key is ready',
       html: `
