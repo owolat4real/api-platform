@@ -51,6 +51,15 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'CareerStudioMax Developer Cloud', version: '1.0.0', uptime: Math.round(process.uptime()) });
 });
 
+// Live-caught (2026-08-28 audit): openapi.yaml existed in this repo but
+// was never actually served or linked from anywhere -- a real spec
+// nobody could reach. It's a static reference doc (no request-specific
+// data), so serving it straight off disk is fine.
+app.get('/openapi.yaml', (req, res) => {
+  res.type('text/yaml; charset=utf-8');
+  res.sendFile(require('path').join(__dirname, 'openapi.yaml'));
+});
+
 app.get('/', (req, res) => {
   res.json({
     service:     'CareerStudioMax Developer Cloud — World\'s First Career Intelligence API',
