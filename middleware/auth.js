@@ -11,9 +11,10 @@ async function authMiddleware(req, res, next) {
   if (!rawKey) {
     return res.status(401).json({
       error: {
-        code:    'missing_api_key',
-        message: 'Include your CareerStudioMax API key in the X-Api-Key header',
-        docs:    'https://careerstudiomax.com/api/docs/authentication',
+        code:      'missing_api_key',
+        message:   'Include your CareerStudioMax API key in the X-Api-Key header',
+        retryable: false,
+        docs:      'https://careerstudiomax.com/api/docs/authentication',
       }
     });
   }
@@ -22,12 +23,15 @@ async function authMiddleware(req, res, next) {
 
   if (!validation.valid) {
     const status = validation.reason === 'daily_limit_exceeded' ? 429 : 401;
-    if (status === 429) res.setHeader('Retry-After', secondsUntilMidnight());
+    const retryable = status === 429;
+    if (retryable) res.setHeader('Retry-After', secondsUntilMidnight());
     return res.status(status).json({
       error: {
-        code:    validation.reason,
-        message: getErrorMessage(validation),
-        docs:    'https://careerstudiomax.com/api/docs/errors',
+        code:      validation.reason,
+        message:   getErrorMessage(validation),
+        retryable,
+        ...(retryable ? { retryAfterSeconds: secondsUntilMidnight() } : {}),
+        docs:      'https://careerstudiomax.com/api/docs/errors',
       }
     });
   }

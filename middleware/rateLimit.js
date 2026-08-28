@@ -20,6 +20,7 @@ function getLimiter(rpm) {
         error: {
           code:        'rate_limit_exceeded',
           message:     `Rate limit of ${rpm} requests/minute exceeded`,
+          retryable:   true,
           retry_after: 60,
           docs:        'https://careerstudiomax.com/api/docs/errors#rate-limiting',
           upgrade:     `${PORTAL_URL}/pricing`,
