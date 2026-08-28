@@ -4,6 +4,7 @@ const crypto   = require('crypto');
 const router   = express.Router();
 const { KeyManager, API_TIERS, MODEL_DISPLAY_NAMES, alertAdmin } = require('../keys/keyManager');
 const { getDB, getAuditDB } = require('../db/connection');
+const { idempotencyGuard } = require('../middleware/idempotency');
 
 // Only create stripe if key is configured — avoids startup crash in dev without billing
 const stripe = process.env.STRIPE_SECRET_KEY && !process.env.STRIPE_SECRET_KEY.includes('your-')
@@ -44,7 +45,7 @@ async function ensureStripePrices() {
 ensureStripePrices();
 
 /* ── REGISTER ─────────────────────────────────────────────── */
-router.post('/register', async (req, res) => {
+router.post('/register', idempotencyGuard(req => req.body?.email?.toLowerCase() || null), async (req, res) => {
   const { email, name, company, github_username } = req.body;
   if (!email || !name) {
     return res.status(400).json({ error: { code: 'missing_fields', message: 'email and name are required' } });

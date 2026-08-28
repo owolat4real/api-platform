@@ -19,6 +19,11 @@ async function connect() {
     _db.collection('developers').createIndex({ email: 1 }, { unique: true }),
     _db.collection('career_contexts').createIndex({ contextId: 1, developerId: 1 }),
     _db.collection('usage_logs').createIndex({ developerId: 1, timestamp: -1 }),
+    // Idempotency-Key support (middleware/idempotency.js) -- unique so a
+    // race between two concurrent requests with the same key can only
+    // ever insert one record; TTL so 24h-old records clean up on their own.
+    _db.collection('idempotency_records').createIndex({ compositeKey: 1 }, { unique: true }),
+    _db.collection('idempotency_records').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
   ]);
   return _db;
 }
