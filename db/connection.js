@@ -28,8 +28,21 @@ function getDB() {
   return _db;
 }
 
+// Shared cluster, separate database: this service's own data lives in
+// MONGODB_DB (careerlm_api by default), but the main platform's admin
+// audit log (cs_fixed/models/AuditLog.js) lives in the "careerstudio" db
+// on the SAME Atlas cluster -- confirmed by comparing both services'
+// MONGODB_URI host segments. Reuses the already-connected client rather
+// than opening a second connection, so an admin gets one unified,
+// cross-platform activity feed instead of api-platform's events being
+// invisible outside this service's own database.
+function getAuditDB() {
+  if (!_client) throw new Error('Database not connected — call connect() first');
+  return _client.db('careerstudio');
+}
+
 async function disconnect() {
   if (_client) { await _client.close(); _db = null; _client = null; }
 }
 
-module.exports = { connect, getDB, disconnect };
+module.exports = { connect, getDB, getAuditDB, disconnect };
