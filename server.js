@@ -30,6 +30,8 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(morgan('combined', { skip: (req) => req.url === '/health' }));
 
+app.use(require('./middleware/requestId'));
+
 // Global rate limiter — generous, per-key limits enforced inside routes
 app.use(rateLimit({
   windowMs:        60 * 1000,

@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Career Intelligence API — 9 world-first endpoints.
+ * Career Intelligence API — 9 purpose-built career intelligence endpoints.
  * Every response is model-name-masked so developers see careerlm-* branding.
  */
 const express = require('express');
@@ -17,7 +17,11 @@ router.use(authMiddleware);
 router.use(rpmLimiter);
 
 /* ── HELPERS ──────────────────────────────────────────────── */
-const req_id = () => 'req_' + crypto.randomBytes(8).toString('hex');
+// Reuses the same X-Request-Id the server-level middleware already put on
+// this response (middleware/requestId.js) instead of minting a second,
+// unrelated ID — so the body's request_id and the header always match.
+// Falls back to a fresh one only if that middleware somehow didn't run.
+const req_id = (req) => (req && req.id) || 'req_' + crypto.randomBytes(8).toString('hex');
 
 function maskModel(model) {
   return MODEL_DISPLAY_NAMES[model] || 'careerlm-standard';
@@ -49,12 +53,12 @@ async function _resolveContext(req, fields) {
   } catch (_) { return {}; }
 }
 
-function err(res, e) {
-  if (e.code === 'content_policy_violation') return res.status(422).json({ error: { code: e.code, message: e.message } });
-  if (e.code === 'model_unavailable')         return res.status(503).json({ error: { code: e.code, message: e.message } });
-  if (e.code === 'request_timeout')           return res.status(504).json({ error: { code: e.code, message: e.message } });
+function err(req, res, e) {
+  if (e.code === 'content_policy_violation') return res.status(422).json({ error: { code: e.code, message: e.message, request_id: req_id(req) } });
+  if (e.code === 'model_unavailable')         return res.status(503).json({ error: { code: e.code, message: e.message, request_id: req_id(req) } });
+  if (e.code === 'request_timeout')           return res.status(504).json({ error: { code: e.code, message: e.message, request_id: req_id(req) } });
   console.error('[careerlm-api]', e.message);
-  res.status(500).json({ error: { code: 'internal_error', message: 'An error occurred. Retry or contact api@careerstudiomax.com', request_id: req_id() } });
+  res.status(500).json({ error: { code: 'internal_error', message: 'An error occurred. Retry or contact api@careerstudiomax.com', request_id: req_id(req) } });
 }
 
 function done(res, result) {
@@ -248,8 +252,8 @@ router.post('/cv/score', async (req, res) => {
       schema:     'cv_score',
     }, req.apiKey);
     done(res, result);
-    res.json({ ...result, request_id: req_id(), model: maskModel(result.model) });
-  } catch (e) { err(res, e); }
+    res.json({ ...result, request_id: req_id(req), model: maskModel(result.model) });
+  } catch (e) { err(req, res, e); }
 });
 
 /* ══════════════════════════════════════════════════════════
@@ -270,8 +274,8 @@ router.post('/cv/optimise', async (req, res) => {
       schema:     'cv_rewrite',
     }, req.apiKey);
     done(res, result);
-    res.json({ ...result, request_id: req_id(), model: maskModel(result.model) });
-  } catch (e) { err(res, e); }
+    res.json({ ...result, request_id: req_id(req), model: maskModel(result.model) });
+  } catch (e) { err(req, res, e); }
 });
 
 /* ══════════════════════════════════════════════════════════
@@ -292,8 +296,8 @@ router.post('/salary/benchmark', async (req, res) => {
       schema:     'salary_report',
     }, req.apiKey);
     done(res, result);
-    res.json({ ...result, request_id: req_id(), model: maskModel(result.model) });
-  } catch (e) { err(res, e); }
+    res.json({ ...result, request_id: req_id(req), model: maskModel(result.model) });
+  } catch (e) { err(req, res, e); }
 });
 
 /* ══════════════════════════════════════════════════════════
@@ -313,8 +317,8 @@ router.post('/cover-letter/generate', async (req, res) => {
       user_id:    req.apiKey.developerId,
     }, req.apiKey);
     done(res, result);
-    res.json({ ...result, mode: modeNum, mode_name: COVER_MODES[modeNum]?.split(':')[0], request_id: req_id(), model: maskModel(result.model) });
-  } catch (e) { err(res, e); }
+    res.json({ ...result, mode: modeNum, mode_name: COVER_MODES[modeNum]?.split(':')[0], request_id: req_id(req), model: maskModel(result.model) });
+  } catch (e) { err(req, res, e); }
 });
 
 /* ══════════════════════════════════════════════════════════
@@ -331,8 +335,8 @@ router.post('/job/match', async (req, res) => {
       schema:     'job_match',
     }, req.apiKey);
     done(res, result);
-    res.json({ ...result, request_id: req_id(), model: maskModel(result.model) });
-  } catch (e) { err(res, e); }
+    res.json({ ...result, request_id: req_id(req), model: maskModel(result.model) });
+  } catch (e) { err(req, res, e); }
 });
 
 /* ══════════════════════════════════════════════════════════
@@ -350,8 +354,8 @@ router.post('/interview/questions', async (req, res) => {
       schema:     'interview_questions',
     }, req.apiKey);
     done(res, result);
-    res.json({ ...result, request_id: req_id(), model: maskModel(result.model) });
-  } catch (e) { err(res, e); }
+    res.json({ ...result, request_id: req_id(req), model: maskModel(result.model) });
+  } catch (e) { err(req, res, e); }
 });
 
 /* ══════════════════════════════════════════════════════════
@@ -371,8 +375,8 @@ router.post('/skills/gap', async (req, res) => {
       schema:     'gap_report',
     }, req.apiKey);
     done(res, result);
-    res.json({ ...result, request_id: req_id(), model: maskModel(result.model) });
-  } catch (e) { err(res, e); }
+    res.json({ ...result, request_id: req_id(req), model: maskModel(result.model) });
+  } catch (e) { err(req, res, e); }
 });
 
 /* ══════════════════════════════════════════════════════════
@@ -399,7 +403,7 @@ router.post('/chat/completions', async (req, res) => {
       choices: [{ index: 0, message: { role: 'assistant', content: result.content }, finish_reason: 'stop' }],
       usage:   result.usage || {},
     });
-  } catch (e) { err(res, e); }
+  } catch (e) { err(req, res, e); }
 });
 
 /* ══════════════════════════════════════════════════════════
@@ -414,7 +418,7 @@ router.post('/context', async (req, res) => {
     { $set: { ...profile, contextId, developerId: req.apiKey.developerId, updatedAt: new Date() } },
     { upsert: true }
   );
-  res.json({ context_id: contextId, status: 'saved', request_id: req_id() });
+  res.json({ context_id: contextId, status: 'saved', request_id: req_id(req) });
 });
 
 router.get('/context/:id', async (req, res) => {
@@ -424,7 +428,7 @@ router.get('/context/:id', async (req, res) => {
     developerId: req.apiKey.developerId,
   });
   if (!ctx) return res.status(404).json({ error: { code: 'not_found', message: 'Context not found' } });
-  res.json({ ...ctx, request_id: req_id() });
+  res.json({ ...ctx, request_id: req_id(req) });
 });
 
 router.delete('/context/:id', async (req, res) => {
@@ -433,7 +437,7 @@ router.delete('/context/:id', async (req, res) => {
     contextId:   req.params.id,
     developerId: req.apiKey.developerId,
   });
-  res.json({ status: 'deleted', request_id: req_id() });
+  res.json({ status: 'deleted', request_id: req_id(req) });
 });
 
 module.exports = router;

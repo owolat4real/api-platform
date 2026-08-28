@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: CareerStudioMax Developer Cloud
   description: |
-    The world's first career intelligence API. Build CV scorers, salary tools,
+    A career intelligence API. Build CV scorers, salary tools,
     interview prep apps, and career chatbots in minutes.
 
     **Free tier**: 1,000 requests/day, no credit card required.
@@ -27,7 +27,7 @@ tags:
   - name: CV
     description: CV scoring and optimisation
   - name: Salary
-    description: Salary benchmarking across 196 countries
+    description: Salary benchmarking across supported markets
   - name: Cover Letter
     description: Cover letter generation in 15 modes
   - name: Jobs
@@ -192,7 +192,7 @@ paths:
     post:
       tags: [CV]
       summary: Rewrite and optimise a CV
-      description: Requires **Starter tier** or above.
+      description: Requires **Pro tier** ($19/month) or above.
       operationId: optimiseCV
       requestBody:
         required: true
@@ -214,15 +214,15 @@ paths:
                     add_metrics:    { type: boolean, default: true }
       responses:
         '200': { description: CV optimised }
-        '403': { description: Feature requires Starter tier }
+        '403': { description: Feature requires Pro tier ($19/month) }
 
   /career/salary/benchmark:
     post:
       tags: [Salary]
-      summary: Benchmark salary across 196 countries
+      summary: Benchmark salary across supported markets
       description: |
         Structured salary intelligence with PPP adjustment, skill premiums, and negotiation guidance.
-        Requires **Starter tier**.
+        Requires **Pro tier** ($19/month).
       operationId: benchmarkSalary
       requestBody:
         required: true
@@ -257,12 +257,13 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SalaryResponse' }
-        '403': { description: Requires Starter tier }
+        '403': { description: Requires Pro tier ($19/month) }
 
   /career/cover-letter/generate:
     post:
       tags: [Cover Letter]
       summary: Generate a cover letter in one of 15 professional modes
+      description: Requires **Pro tier** ($19/month) or above.
       operationId: generateCoverLetter
       requestBody:
         required: true
@@ -284,7 +285,7 @@ paths:
                     word_limit: { type: integer, default: 280 }
       responses:
         '200': { description: Cover letter generated }
-        '403': { description: Requires Starter tier }
+        '403': { description: Requires Pro tier ($19/month) }
 
   /career/job/match:
     post:
@@ -328,6 +329,7 @@ paths:
     post:
       tags: [Interview]
       summary: Generate tailored interview questions with model answers
+      description: Requires **Pro tier** ($19/month) or above.
       operationId: generateInterviewQuestions
       requestBody:
         required: true
@@ -406,7 +408,7 @@ paths:
       tags: [Context]
       summary: Save a career context (persistent memory)
       description: |
-        World-first: persist career facts across API calls. Pass context_id in subsequent
+        Persists career facts across API calls. Pass context_id in subsequent
         calls so the model remembers the candidate's role, skills, and goals automatically.
       operationId: saveContext
       requestBody:
