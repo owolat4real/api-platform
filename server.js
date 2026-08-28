@@ -113,6 +113,25 @@ async function boot() {
     console.log(`  📋 Register:   POST http://localhost:${PORT}/v1/developer/register`);
     console.log(`  📖 Docs:       https://careerstudiomax.com/api/docs\n`);
   });
+
+  // Revoked API Key Cleanup (2026-08-28) -- same grace-period auto-delete
+  // as cs_fixed's jobs/revokedKeyCleanup.js, adapted to this service's
+  // plain setInterval style (no node-cron dependency here). Runs once at
+  // boot, then every 24h. A revoked key is already fully inert the
+  // instant it's revoked (KeyManager.validate only ever matches
+  // status:'active') -- this just clears out the historical record after
+  // it's sat revoked for REVOKED_KEY_RETENTION_DAYS (default 90d) with
+  // nobody manually deleting it via DELETE /keys/:developerId/:keyId.
+  const { KeyManager } = require('./keys/keyManager');
+  const runKeyCleanup = () => {
+    KeyManager.cleanupRevokedKeys()
+      .then(({ deletedCount, retentionDays }) => {
+        if (deletedCount) console.log(`[KEY-CLEANUP] Permanently deleted ${deletedCount} key(s) revoked more than ${retentionDays}d ago`);
+      })
+      .catch(e => console.error('[KEY-CLEANUP] Sweep failed:', e.message));
+  };
+  runKeyCleanup();
+  setInterval(runKeyCleanup, 24 * 60 * 60 * 1000);
 }
 
 boot().catch(e => { console.error('Boot failed:', e.message); process.exit(1); });

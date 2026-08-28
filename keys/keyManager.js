@@ -2,7 +2,22 @@
 const crypto      = require('crypto');
 const nodemailer  = require('nodemailer');
 const { getDB }   = require('../db/connection');
-const PORTAL_URL  = process.env.PORTAL_URL || 'https://careerstudiomax.com';
+
+// Live-caught (2026-08-24): EMAIL_FROM was set directly in this service's
+// own Render dashboard to "CareerStudioMax Developer Cloud
+// <api@careerstudio.ai>" -- the platform's retired domain (careerstudiomax.com
+// is canonical everywhere else) -- silently sending every welcome email
+// from an address real mail providers have no reason to trust. Same
+// class of bug cs_fixed's config/validateEnv.js has a guard for; this
+// mirrors that guard's scope (fix the stored value directly, but also
+// never trust it blindly again) for this separate, standalone repo.
+function _canonicalDomain(val, fallback) {
+  if (!val) return fallback;
+  const fixed = val.replace(/careerstudio\.ai|career-studio\.ai/gi, 'careerstudiomax.com');
+  if (fixed !== val) console.error(`\n🚨 DOMAIN MISCONFIGURATION AUTO-CORRECTED: was "${val}", using "${fixed}" instead. Fix the real stored value in Render's dashboard.\n`);
+  return fixed;
+}
+const PORTAL_URL = _canonicalDomain(process.env.PORTAL_URL, 'https://careerstudiomax.com');
 
 // Renamed 2026-08-19 (same directive as Transformer's rename in
 // cs_fixed/routes/transformer.js): cs-haiku/cs-sonnet/cs-opus ->
@@ -81,7 +96,7 @@ async function sendWelcomeEmail(developerId, apiKey, tier) {
       auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
     });
     await transport.sendMail({
-      from:    process.env.EMAIL_FROM || 'CareerStudioMax Developer Cloud <api@careerstudiomax.com>',
+      from:    _canonicalDomain(process.env.EMAIL_FROM, 'CareerStudioMax Developer Cloud <api@careerstudiomax.com>'),
       to:      dev.email,
       subject: 'Your CareerStudioMax Developer Cloud API key is ready',
       html: `
@@ -106,6 +121,39 @@ console.log(score.ats_score)  // 87</pre>
     });
   } catch (e) {
     console.warn('[KeyManager] Welcome email skipped:', e.message?.slice(0, 80));
+  }
+}
+
+/* ── ADMIN ALERT ───────────────────────────────────────────────
+   Real, honest gap found (2026-08-24): this service's new-signup event
+   only ever reached the shared admin audit log (routes/developerRoutes.js's
+   getAuditDB() write) -- a passive record admin has to go check. The four
+   OTHER developer platforms (cs_fixed's Transformer/CSTM-2/CAMP/CSVM auth
+   routes) all additionally fire a real-time Telegram+email ping via
+   services/adminAlert.js on every signup. This service has no Telegram
+   credentials configured and is a separate codebase from services/
+   adminAlert.js, so it can't reuse that module directly -- this is the
+   email-only equivalent, reusing the exact SMTP transport sendWelcomeEmail
+   above already uses, with the same ADMIN_EMAIL/FOUNDER_EMAIL fallback
+   chain services/adminAlert.js uses in the other codebase, so behavior
+   matches even though the code can't be shared. */
+async function alertAdmin(subject, detail) {
+  if (!process.env.SMTP_HOST) return;
+  const to = process.env.ADMIN_EMAIL || process.env.FOUNDER_EMAIL || 'owo1232011@gmail.com';
+  try {
+    const transport = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT) || 587,
+      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    });
+    await transport.sendMail({
+      from:    _canonicalDomain(process.env.EMAIL_FROM, 'CareerStudioMax Developer Cloud <api@careerstudiomax.com>'),
+      to,
+      subject: `🚨 ${subject}`,
+      html:    `<p>${detail.replace(/\n/g, '<br>')}</p><p style="color:#888;font-size:12px">env: ${process.env.NODE_ENV || 'development'}</p>`,
+    });
+  } catch (e) {
+    console.warn('[KeyManager] Admin alert skipped:', e.message?.slice(0, 80));
   }
 }
 
@@ -241,6 +289,56 @@ class KeyManager {
       .project({ keyHash: 0, recentCalls: 0 })
       .toArray();
   }
+
+  // New (2026-08-28), companion to deleteKey below: revoked keys were
+  // already correctly excluded from listByDeveloper above, but with
+  // nowhere else to see them, a revoked key was invisible in the
+  // dashboard forever with no way to actually remove its record.
+  static async listRevokedByDeveloper(developerId) {
+    const db = getDB();
+    return db.collection('api_keys')
+      .find({ developerId, status: 'revoked' })
+      .project({ keyHash: 0, recentCalls: 0 })
+      .toArray();
+  }
+
+  /* ── DELETE (permanent) ───────────────────────────────────────
+     New (2026-08-28): the DELETE /keys/:developerId/:keyId route only
+     ever set status:'revoked' (see developerRoutes.js) -- no way to
+     actually remove a key's record. Requires the key to already be
+     revoked first, a real safety rail against deleting a live key by
+     accident from a client that skipped confirmation. Usage records
+     don't reference keys by a foreign key that display anything from the
+     key document itself, so this is a real hard delete, not another
+     status flag. */
+  static async deleteKey(developerId, keyId) {
+    const db = getDB();
+    const { ObjectId } = require('mongodb');
+    const key = await db.collection('api_keys').findOne({ _id: new ObjectId(keyId), developerId });
+    if (!key) { const e = new Error('Key not found or not owned by this developer'); e.code = 'key_not_found'; throw e; }
+    if (key.status !== 'revoked') { const e = new Error('Revoke this key before deleting it'); e.code = 'key_still_active'; throw e; }
+    await db.collection('api_keys').deleteOne({ _id: key._id });
+  }
+
+  /* ── CLEANUP (grace-period auto-delete) ──────────────────────────
+     Innovation on top of deleteKey above (2026-08-28): manual delete only
+     ever runs if a developer comes back and clicks it -- a revoked key
+     with nobody left to click Delete sits around forever. This mirrors
+     the DELETE /keys/:developerId/:keyId revoke branch, which already
+     stamps revokedAt on revoke, so age is directly queryable. Called on
+     a daily interval from server.js; retention configurable via
+     REVOKED_KEY_RETENTION_DAYS (default 90d), same env var name used by
+     cs_fixed's equivalent job (jobs/revokedKeyCleanup.js) for the other
+     4 developer platforms. */
+  static async cleanupRevokedKeys() {
+    const retentionDays = Number(process.env.REVOKED_KEY_RETENTION_DAYS) || 90;
+    const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+    const db = getDB();
+    const { deletedCount } = await db.collection('api_keys').deleteMany({
+      status: 'revoked', revokedAt: { $ne: null, $lte: cutoff },
+    });
+    return { deletedCount, retentionDays, cutoff };
+  }
 }
 
-module.exports = { KeyManager, API_TIERS, MODEL_DISPLAY_NAMES };
+module.exports = { KeyManager, API_TIERS, MODEL_DISPLAY_NAMES, alertAdmin };

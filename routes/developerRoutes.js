@@ -2,8 +2,8 @@
 const express  = require('express');
 const crypto   = require('crypto');
 const router   = express.Router();
-const { KeyManager, API_TIERS, MODEL_DISPLAY_NAMES } = require('../keys/keyManager');
-const { getDB } = require('../db/connection');
+const { KeyManager, API_TIERS, MODEL_DISPLAY_NAMES, alertAdmin } = require('../keys/keyManager');
+const { getDB, getAuditDB } = require('../db/connection');
 
 // Only create stripe if key is configured — avoids startup crash in dev without billing
 const stripe = process.env.STRIPE_SECRET_KEY && !process.env.STRIPE_SECRET_KEY.includes('your-')
@@ -70,6 +70,27 @@ router.post('/register', async (req, res) => {
 
   const { key } = await KeyManager.create({ developerId, tier: 'FREE', name: 'Default Key' });
 
+  // Writes into the SAME admin audit log the main platform's dashboard
+  // already reads (cs_fixed's AuditLog model, same Atlas cluster,
+  // "careerstudio" db) -- see db/connection.js's getAuditDB() -- so a new
+  // Developer Cloud signup shows up in the one place admin already looks
+  // for developer-platform activity, not invisible outside this service.
+  getAuditDB().collection('auditlogs').insertOne({
+    actorEmail: email.toLowerCase(), actorName: name, action: 'developer.signup.apiplatform',
+    category: 'auth', resource: 'developers', resourceId: developerId,
+    detail: { company: company || null, tier: 'FREE' },
+    result: 'success', createdAt: new Date(), updatedAt: new Date(),
+  }).catch(() => {});
+
+  // Real-time ping to match the other four developer platforms
+  // (Transformer/CSTM-2/CAMP/CSVM), which all alert admin immediately on
+  // signup via services/adminAlert.js -- this service had only the
+  // passive audit-log write above until now, a real inconsistency.
+  alertAdmin(
+    `New Developer Cloud signup: ${email}`,
+    `Name: ${name}\nCompany: ${company || 'not provided'}\nDeveloper ID: ${developerId}`,
+  ).catch(() => {});
+
   res.status(201).json({
     developer_id: developerId,
     api_key:      key,
@@ -97,9 +118,17 @@ async function _requireOwnKey(req, res) {
 
 /* ── LIST KEYS ────────────────────────────────────────────── */
 router.get('/keys/:developerId', async (req, res) => {
+  const mask = k => ({ ...k, prefix: k.prefix + '_v1_...hidden' });
   const keys = await KeyManager.listByDeveloper(req.params.developerId);
-  // Mask key prefix only — never return keyHash
-  res.json({ keys: keys.map(k => ({ ...k, prefix: k.prefix + '_v1_...hidden' })) });
+  // Live-caught (2026-08-28): revoked keys were already correctly hidden
+  // from this list (listByDeveloper only ever queried status:'active'),
+  // but that meant they were invisible everywhere with no way to actually
+  // remove their record. Surfaced here too, separately, so the dashboard
+  // can show them with a real permanent-delete action (see DELETE
+  // /keys/:developerId/:keyId below, which now deletes for real on an
+  // already-revoked key instead of only ever re-revoking it).
+  const revokedKeys = await KeyManager.listRevokedByDeveloper(req.params.developerId);
+  res.json({ keys: keys.map(mask), revoked_keys: revokedKeys.map(mask) });
 });
 
 /* ── ROTATE KEY ───────────────────────────────────────────── */
@@ -120,7 +149,16 @@ router.post('/keys/:developerId/rotate', async (req, res) => {
   }
 });
 
-/* ── REVOKE KEY ───────────────────────────────────────────── */
+/* ── REVOKE / DELETE KEY ──────────────────────────────────────
+   New (2026-08-28): this route already owned DELETE /keys/:developerId/:keyId
+   for revoking, so there's no free verb/path left to add a separate
+   permanent-delete route the way the other 4 platforms (CAMP, CSTM-2,
+   Transformer, CSVM) did. Instead this single endpoint now escalates:
+   an active key gets revoked (unchanged behavior), and calling it again
+   on an already-revoked key permanently deletes it (KeyManager.deleteKey,
+   which itself re-checks status==='revoked' as a real safety rail against
+   deleting a live key). Matches the "revoke first, then delete" two-step
+   UX already shipped on every other platform's dashboard. */
 router.delete('/keys/:developerId/:keyId', async (req, res) => {
   if (!await _requireOwnKey(req, res)) return;
   const db = getDB();
@@ -128,6 +166,18 @@ router.delete('/keys/:developerId/:keyId', async (req, res) => {
   let objectId;
   try { objectId = new ObjectId(req.params.keyId); }
   catch { return res.status(400).json({ error: { code: 'invalid_key_id', message: 'Invalid key id' } }); }
+
+  const existing = await db.collection('api_keys').findOne({ _id: objectId, developerId: req.params.developerId });
+  if (!existing) return res.status(404).json({ error: { code: 'key_not_found', message: 'Key not found or not owned by this developer' } });
+
+  if (existing.status === 'revoked') {
+    try {
+      await KeyManager.deleteKey(req.params.developerId, req.params.keyId);
+      return res.json({ status: 'deleted' });
+    } catch (e) {
+      return res.status(400).json({ error: { code: e.code || 'delete_failed', message: e.message } });
+    }
+  }
 
   const result = await db.collection('api_keys').updateOne(
     { _id: objectId, developerId: req.params.developerId },
@@ -199,12 +249,27 @@ router.post('/upgrade', async (req, res) => {
     // exists (e.g. a prior upgrade or a previous incomplete attempt)
     // instead of creating a fresh one every call.
     let customerId = developer.stripeCustomerId;
-    if (customerId) {
-      await stripe.paymentMethods.attach(payment_method_id, { customer: customerId }).catch(() => {});
-    } else {
+    if (!customerId) {
       const customer = await stripe.customers.create({ email: developer.email, metadata: { developer_id } });
       customerId = customer.id;
+    }
+    // Real, live-caught bug (2026-08-24): this attach() call used to swallow
+    // its own failure with `.catch(() => {})` on the reuse-existing-customer
+    // path. A genuinely failed attach (confirmed live: a developer's card
+    // was declined -- card_declined/test_mode_live_card, a real Stripe
+    // decline, not a platform bug in itself) went silent, execution fell
+    // through to customers.update() below trying to set a default_payment_
+    // method that was never actually attached, THAT threw Stripe's raw
+    // "customer does not have a payment method" error, and the generic
+    // catch block at the bottom of this handler leaked that raw text
+    // straight to the user. Now caught here, specifically, before any
+    // customer/subscription state is touched.
+    try {
       await stripe.paymentMethods.attach(payment_method_id, { customer: customerId });
+    } catch (attachErr) {
+      console.error('[billing] paymentMethods.attach failed:', attachErr.type, attachErr.code, attachErr.message);
+      const declineMessage = attachErr.type === 'StripeCardError' ? attachErr.message : 'We couldn\'t save your card. Please check your card details and try again.';
+      return res.status(402).json({ error: { code: 'payment_method_attach_failed', message: declineMessage } });
     }
     await stripe.customers.update(customerId, { invoice_settings: { default_payment_method: payment_method_id } });
 
@@ -260,8 +325,16 @@ router.post('/upgrade', async (req, res) => {
     await _applyTierUpgrade(db, developer_id, tier, customerId, subscription.id);
     res.json({ status: 'upgraded', tier, features: tierConfig.features, daily_limit: tierConfig.daily_requests, price: `$${tierConfig.price}/month` });
   } catch (e) {
-    console.error('[billing]', e.message);
-    res.status(500).json({ error: { code: 'billing_error', message: e.message } });
+    // Real gap: e.message was sent to the client raw for every error type,
+    // including Stripe's internal-object-state errors (e.g. "The customer
+    // does not have a payment method with the ID pm_..." from
+    // customers.update()/subscriptions.create()) -- never meant for an
+    // end user. Only StripeCardError messages (declines) are actually
+    // written to be user-facing; everything else gets a safe generic
+    // message, with full detail still logged server-side.
+    console.error('[billing]', e.type || e.name, e.code, e.message);
+    const safeMessage = e.type === 'StripeCardError' ? e.message : 'Something went wrong processing your upgrade. Your card was not charged.';
+    res.status(e.type === 'StripeCardError' ? 402 : 500).json({ error: { code: 'billing_error', message: safeMessage } });
   }
 });
 
@@ -296,8 +369,9 @@ router.post('/upgrade/confirm', async (req, res) => {
     await _applyTierUpgrade(db, developer_id, tier, subscription.customer, subscription.id);
     res.json({ status: 'upgraded', tier, features: tierConfig.features, daily_limit: tierConfig.daily_requests, price: `$${tierConfig.price}/month` });
   } catch (e) {
-    console.error('[billing confirm]', e.message);
-    res.status(500).json({ error: { code: 'billing_error', message: e.message } });
+    console.error('[billing confirm]', e.type || e.name, e.code, e.message);
+    const safeMessage = e.type === 'StripeCardError' ? e.message : 'Something went wrong confirming your upgrade. Please contact support if this persists.';
+    res.status(e.type === 'StripeCardError' ? 402 : 500).json({ error: { code: 'billing_error', message: safeMessage } });
   }
 });
 
