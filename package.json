@@ -1,7 +1,7 @@
 {
   "name": "careerlm-api-platform",
   "version": "1.0.0",
-  "description": "CareerLM Public API Platform — world's first career intelligence API",
+  "description": "CareerLM Public API Platform — a career intelligence API",
   "author": "CloudooAI Solution",
   "main": "server.js",
   "scripts": {
