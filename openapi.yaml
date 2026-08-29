@@ -61,6 +61,14 @@ components:
             code:    { type: string, example: missing_cv_text }
             message: { type: string }
             docs:    { type: string }
+            retryable:
+              type: boolean
+              description: |
+                Present on every error response (added by the shared
+                error contract middleware, 2026-08-29) -- true only for
+                genuinely transient conditions (rate limit, upstream
+                timeout); false for anything requiring the caller to
+                change the request before retrying.
 
     CVScoreResponse:
       type: object
