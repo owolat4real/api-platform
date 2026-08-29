@@ -34,6 +34,7 @@ test('absent error field: adds a new error object, already-present fields untouc
     message: 'API key required',
     code: 'missing_api_key',
     type: 'invalid_request_error',
+    retryable: false,
     requestId: 'req_abc123',
   });
 });
@@ -55,6 +56,24 @@ test('cqlRoutes.js divergent {kind,message,step} shape: merged as an object, kin
   assert.strictEqual(out.error.message, 'Unexpected token'); // untouched
   assert.strictEqual(out.error.code, 'INVALID_REQUEST'); // filled in
   assert.strictEqual(out.error.requestId, 'req_cql1'); // filled in
+});
+
+console.log('\napplyErrorContract: retryable');
+
+test('per-status default: 429 defaults retryable:true when not explicitly set', () => {
+  const out = applyErrorContract({ message: 'rate limited' }, 429, 'req_429');
+  assert.strictEqual(out.error.retryable, true);
+});
+
+test('per-status default: 401 defaults retryable:false when not explicitly set', () => {
+  const out = applyErrorContract({ message: 'unauthorized' }, 401, 'req_401');
+  assert.strictEqual(out.error.retryable, false);
+});
+
+test('an explicit retryable already set by middleware/auth.js-style code is never overwritten', () => {
+  const body = { error: { message: 'Daily quota exceeded', retryable: false } };
+  const out = applyErrorContract({ error: { ...body.error } }, 429, 'req_explicit');
+  assert.strictEqual(out.error.retryable, false); // untouched, even though 429 would default to true
 });
 
 console.log('\nerrorContract() middleware');

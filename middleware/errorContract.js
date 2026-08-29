@@ -21,30 +21,37 @@
  * keep untouched.
  *
  * ADDITIVE ONLY -- never changes the JS type of an existing field:
- *   - `error` absent            -> adds a new `error: {message,code,type,requestId}` object
+ *   - `error` absent            -> adds a new `error: {message,code,type,retryable,requestId}` object
  *   - `error` already an object -> fills in only whichever of
- *                                  message/code/type/requestId are missing
+ *                                  message/code/type/retryable/requestId are missing
  *   - `error` already a string  -> left completely untouched; the
  *                                  canonical object is added under a new
  *                                  sibling key, `error_detail`, instead
+ *
+ * `retryable` (added 2026-08-29, mirroring cs_fixed's same-day fix):
+ * this app's own auth/rate-limit routes already set `retryable` by hand
+ * (middleware/auth.js/rateLimit.js's own explicit field, added
+ * separately) -- that explicit value is never overridden here. This
+ * only fills in a sensible per-status default for any route that didn't
+ * set one, so no error response ships without the field at all.
  *
  * Only wraps res.json -- SSE res.write() error frames are out of scope.
  */
 
 const STATUS_TAXONOMY = {
-  400: { code: 'INVALID_REQUEST', type: 'invalid_request_error' },
-  401: { code: 'UNAUTHORIZED', type: 'invalid_request_error' },
-  402: { code: 'INSUFFICIENT_QUOTA', type: 'insufficient_quota' },
-  403: { code: 'INSUFFICIENT_PERMISSIONS', type: 'insufficient_permissions' },
-  404: { code: 'NOT_FOUND', type: 'invalid_request_error' },
-  409: { code: 'CONFLICT', type: 'invalid_request_error' },
-  429: { code: 'RATE_LIMIT_EXCEEDED', type: 'rate_limit_error' },
-  500: { code: 'API_ERROR', type: 'api_error' },
-  502: { code: 'SERVICE_UNAVAILABLE', type: 'service_unavailable' },
-  503: { code: 'SERVICE_UNAVAILABLE', type: 'service_unavailable' },
-  504: { code: 'TIMEOUT', type: 'service_unavailable' },
+  400: { code: 'INVALID_REQUEST', type: 'invalid_request_error', retryable: false },
+  401: { code: 'UNAUTHORIZED', type: 'invalid_request_error', retryable: false },
+  402: { code: 'INSUFFICIENT_QUOTA', type: 'insufficient_quota', retryable: false },
+  403: { code: 'INSUFFICIENT_PERMISSIONS', type: 'insufficient_permissions', retryable: false },
+  404: { code: 'NOT_FOUND', type: 'invalid_request_error', retryable: false },
+  409: { code: 'CONFLICT', type: 'invalid_request_error', retryable: true },
+  429: { code: 'RATE_LIMIT_EXCEEDED', type: 'rate_limit_error', retryable: true },
+  500: { code: 'API_ERROR', type: 'api_error', retryable: false },
+  502: { code: 'SERVICE_UNAVAILABLE', type: 'service_unavailable', retryable: true },
+  503: { code: 'SERVICE_UNAVAILABLE', type: 'service_unavailable', retryable: true },
+  504: { code: 'TIMEOUT', type: 'service_unavailable', retryable: true },
 };
-const DEFAULT_TAXONOMY = { code: 'API_ERROR', type: 'api_error' };
+const DEFAULT_TAXONOMY = { code: 'API_ERROR', type: 'api_error', retryable: false };
 
 function _deriveMessage(body) {
   if (typeof body.error === 'string') return body.error;
@@ -65,13 +72,25 @@ function _deriveType(body) {
   return null;
 }
 
+// Unlike message/code/type (strings -- "not present" is unambiguous),
+// retryable is a boolean, so this returns null (not just falsy) when no
+// explicit value exists anywhere, letting the caller fall back to the
+// per-status taxonomy default instead of misreading "unset" as `false`.
+function _deriveRetryable(body) {
+  if (typeof body.retryable === 'boolean') return body.retryable;
+  if (body.error && typeof body.error === 'object' && typeof body.error.retryable === 'boolean') return body.error.retryable;
+  return null;
+}
+
 /** @internal exported for tests */
 function applyErrorContract(body, statusCode, requestId) {
   const taxonomy = STATUS_TAXONOMY[statusCode] || DEFAULT_TAXONOMY;
+  const explicitRetryable = _deriveRetryable(body);
   const canonical = {
     message: _deriveMessage(body) || 'Request failed',
     code: _deriveCode(body) || taxonomy.code,
     type: _deriveType(body) || taxonomy.type,
+    retryable: explicitRetryable !== null ? explicitRetryable : taxonomy.retryable,
     requestId: requestId || null,
   };
 
@@ -81,6 +100,7 @@ function applyErrorContract(body, statusCode, requestId) {
     if (body.error.message === undefined) body.error.message = canonical.message;
     if (body.error.code === undefined) body.error.code = canonical.code;
     if (body.error.type === undefined) body.error.type = canonical.type;
+    if (body.error.retryable === undefined) body.error.retryable = canonical.retryable;
     if (body.error.requestId === undefined) body.error.requestId = canonical.requestId;
   } else if (typeof body.error === 'string' && body.error_detail === undefined) {
     body.error_detail = canonical;
