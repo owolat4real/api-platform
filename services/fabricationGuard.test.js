@@ -96,5 +96,18 @@ test('empty/missing source texts are handled without throwing', () => {
   assert.strictEqual(result.flagged, true);
 });
 
+test('checkNumbers:false (the /cv/optimise add_metrics case) skips new numbers but still catches a new employer name', () => {
+  const cv = 'Reduced latency while working at Tech Solutions Ltd.';
+  const withInventedMetricOnly = 'Reduced latency by 30% while working at Tech Solutions Ltd.';
+  const numbersOn = checkFabrication(withInventedMetricOnly, [cv]);
+  assert.strictEqual(numbersOn.flagged, true, 'default (checkNumbers:true) should catch the invented 30%');
+  const numbersOff = checkFabrication(withInventedMetricOnly, [cv], { checkNumbers: false });
+  assert.strictEqual(numbersOff.flagged, false, 'checkNumbers:false should let the advertised "add metrics" behavior through');
+
+  const withInventedEmployer = 'Reduced latency by 30% while working at Quantum Dynamics Corp.';
+  const stillCatchesEmployer = checkFabrication(withInventedEmployer, [cv], { checkNumbers: false });
+  assert.strictEqual(stillCatchesEmployer.flagged, true, 'a fabricated employer name must still be caught even with checkNumbers:false');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

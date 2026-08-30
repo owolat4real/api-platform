@@ -88,16 +88,19 @@ function done(res, result) {
  *   text out of a result (raw content, or a parsed JSON field)
  * @param {string[]} sourceTexts - the real fields the caller submitted
  * @param {{endpoint:string, developerId:string}} meta
+ * @param {{checkNumbers?:boolean}} [guardOptions] - passed straight through
+ *   to fabricationGuard.checkFabrication -- see its own doc comment for
+ *   why /cv/optimise needs checkNumbers:false by default.
  */
-async function withFabricationGuard(callFn, extractText, sourceTexts, meta) {
+async function withFabricationGuard(callFn, extractText, sourceTexts, meta, guardOptions = {}) {
   let result = await callFn();
-  let check = checkFabrication(extractText(result), sourceTexts);
+  let check = checkFabrication(extractText(result), sourceTexts, guardOptions);
   if (check.flagged) {
     const msg = `entities: ${check.suspiciousEntities.join(', ')} — developer ${meta.developerId} — endpoint ${meta.endpoint}`;
     console.warn(`[fabricationGuard] Possible fabrication, retrying: ${msg}`);
     alertAdmin('fabrication_detected', `${meta.endpoint} produced unsourced claims on first pass — retrying once: ${msg}`).catch(() => {});
     const retryResult = await callFn();
-    const retryCheck = checkFabrication(extractText(retryResult), sourceTexts);
+    const retryCheck = checkFabrication(extractText(retryResult), sourceTexts, guardOptions);
     if (!retryCheck.flagged) {
       result = retryResult;
     } else {
@@ -252,6 +255,13 @@ Return a valid JSON array. Each item:
 Make questions specific to ${company || 'top companies in this space'}. No generic filler.`;
 }
 
+// Real gap found live (2026-08-30): every individual gap's salary_impact
+// below reliably comes back tagged [ESTIMATED] by the model, but
+// total_salary_unlock -- a SUM of those same estimates, arguably even
+// less certain than any one of them -- was coming back untagged. The
+// per-gap field's own placeholder already showed no tag either, so the
+// model had nothing to imitate for the total; both placeholders (and
+// the matching field in the ROI block) now show the tag explicitly.
 function pSkillGap(skills, role, country, months, salary, opts = {}) {
   const cur = opts.currency || 'GBP';
   return `Skill gap analysis.
@@ -272,14 +282,15 @@ Return valid JSON:
     "required_level": <"L1"|"L2"|"L3"|"L4">,
     "learn_hours": <int>,
     "learn_weeks": <int>,
-    "salary_impact": "<+£x,xxx/year>",
+    "salary_impact": "<+£x,xxx/year [ESTIMATED]>",
     "demand_score": <int 0-100>,
     "free_resources": [...],
     "certification": <str|null>
   }],
   "estimated_time_to_ready": "<N months>",
-  "total_salary_unlock": "<+£xx,xxx/year>"${opts.include_roi ? ',\n  "roi_analysis": { "investment_hours": <int>, "salary_gain_year1": "<str>", "payback_months": <int> }' : ''}
-}`;
+  "total_salary_unlock": "<+£xx,xxx/year [ESTIMATED]>"${opts.include_roi ? ',\n  "roi_analysis": { "investment_hours": <int>, "salary_gain_year1": "<str [ESTIMATED]>", "payback_months": <int> }' : ''}
+}
+Tag total_salary_unlock (and salary_gain_year1, if present) [ESTIMATED] too -- it's a sum of the same estimated per-gap figures above, not a more certain number than any of them.`;
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -327,6 +338,12 @@ router.post('/cv/optimise', async (req, res) => {
       (r) => { try { return JSON.parse(r.content).optimised_cv || ''; } catch (_) { return ''; } },
       [cv_text, job_description],
       { endpoint: '/cv/optimise', developerId: req.apiKey.developerId },
+      // add_metrics defaults to true (see pCVOptimise) -- an advertised,
+      // opt-in feature that means the model IS supposed to add numbers
+      // not in the original CV. Checking numbers there would mean this
+      // guard permanently fails the feature it's asked to perform.
+      // Employer/company NAME fabrication is still checked unconditionally.
+      { checkNumbers: options.add_metrics === false },
     );
     done(res, result);
     res.json({ ...result, request_id: req_id(req), model: maskModel(result.model) });

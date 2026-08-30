@@ -141,9 +141,22 @@ function extractProperNouns(text, strict) {
  *   company + candidate name all at once -- one is enough to distrust,
  *   unlike phrases, where wording/boundary differences need more
  *   tolerance.
+ * @param {{checkNumbers?: boolean}} [options] - checkNumbers defaults to
+ *   true. Real conflict found live (2026-08-30): /cv/optimise's own
+ *   prompt explicitly says "Add metrics where missing: true" by default
+ *   -- an advertised, opt-in feature, not a bug -- which means every
+ *   call with that default was guaranteed to introduce a "new" number
+ *   and get flagged, permanently breaking the feature it was supposed
+ *   to just make honest. checkNumbers:false lets a caller that
+ *   deliberately invited metric-adding skip ONLY the number check while
+ *   keeping full protection against the more dangerous class this guard
+ *   exists for -- a fabricated employer/company NAME, which is never a
+ *   legitimate thing for any of these endpoints to add regardless of
+ *   options.
  * @returns {{flagged: boolean, suspiciousEntities: string[]}}
  */
-function checkFabrication(generatedText, sourceTexts) {
+function checkFabrication(generatedText, sourceTexts, options = {}) {
+  const checkNumbers = options.checkNumbers !== false;
   const combinedSource = (sourceTexts || []).filter(Boolean).join('\n');
   const sourceProper = extractProperNouns(combinedSource, false);
   const sourceNounSet = new Set([...sourceProper.multiWord, ...sourceProper.singleWord]);
@@ -152,7 +165,9 @@ function checkFabrication(generatedText, sourceTexts) {
   const generatedProper = extractProperNouns(generatedText, true);
   const newMultiWord = [...new Set(generatedProper.multiWord.filter(n => !sourceNounSet.has(n)))];
   const newSingleWord = [...new Set(generatedProper.singleWord.filter(n => !sourceNounSet.has(n)))];
-  const newNumbers = [...new Set(extractNumericClaims(generatedText).filter(n => !sourceNumbers.has(n)))];
+  const newNumbers = checkNumbers
+    ? [...new Set(extractNumericClaims(generatedText).filter(n => !sourceNumbers.has(n)))]
+    : [];
 
   const suspiciousEntities = [...newMultiWord, ...newSingleWord, ...newNumbers];
   // Unlike cs_fixed's original CV-rewrite check (single source document,
