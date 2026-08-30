@@ -61,6 +61,67 @@ app.get('/openapi.yaml', (req, res) => {
   res.sendFile(require('path').join(__dirname, 'openapi.yaml'));
 });
 
+// developer-portal's own nav bar links straight to /openapi.yaml, which a
+// browser just renders as an unstyled raw-text dump -- no page chrome at
+// all, unlike every other developer-portal page. This gives it a real,
+// minimally-styled shell (self-contained, no dependency on cs_fixed's
+// separately-deployed consumer-site assets, since this is a distinct
+// product/origin) while /openapi.yaml itself stays raw for tooling
+// (Postman/codegen import by URL).
+app.get('/docs', (req, res) => {
+  res.type('html').send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenAPI Spec — CareerStudioMax Developer Cloud</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css" media="(prefers-color-scheme: dark)">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-light.min.css" media="(prefers-color-scheme: light)">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/yaml.min.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; background:#0a0a0b; color:#d4d4d8; line-height:1.65; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 40px 20px 80px; }
+  .top-row { display:flex; align-items:baseline; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+  h1 { font-size: 1.5rem; color:#5b7c99; margin:0 0 6px; }
+  .subtitle { color:#8a8a92; font-size:.9rem; margin:0 0 24px; }
+  .raw-link { color:#5b7c99; font-size:.85rem; text-decoration:none; white-space:nowrap; }
+  .raw-link:hover { text-decoration:underline; }
+  #spec-body { border-radius: 10px; overflow: auto; max-height: 78vh; border: 1px solid rgba(255,255,255,.08); background: rgba(255,255,255,.03); }
+  #spec-body pre { margin:0; padding:18px 20px; font-size:.82rem; }
+  @media (prefers-color-scheme: light) {
+    body { background:#ffffff; color:#3f3f46; }
+    .subtitle { color:#71717a; }
+    #spec-body { border-color: rgba(0,0,0,.08); background: rgba(0,0,0,.02); }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top-row">
+    <div>
+      <h1>CareerStudioMax Developer Cloud</h1>
+      <p class="subtitle">Real, current OpenAPI 3 spec for this API.</p>
+    </div>
+    <a class="raw-link" href="/openapi.yaml">View raw YAML &rarr;</a>
+  </div>
+  <div id="spec-body"><pre><code class="language-yaml">Loading…</code></pre></div>
+</div>
+<script>
+  fetch('/openapi.yaml').then(function(r){ return r.text(); }).then(function(yaml){
+    var code = document.querySelector('#spec-body code');
+    code.textContent = yaml;
+    hljs.highlightElement(code);
+  }).catch(function(){
+    document.getElementById('spec-body').textContent = 'Could not load the spec. View it raw at /openapi.yaml.';
+  });
+</script>
+</body>
+</html>`);
+});
+
 app.get('/', (req, res) => {
   res.json({
     service:     'CareerStudioMax Developer Cloud — World\'s First Career Intelligence API',
