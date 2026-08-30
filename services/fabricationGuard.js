@@ -180,7 +180,29 @@ function checkFabrication(generatedText, sourceTexts, options = {}) {
   // catches this directly, independent of how either side happened to
   // chunk -- a phrase that's truly new to the source can't be a
   // substring of it no matter how chunking varies.
-  const isPhraseSourced = (phrase) => sourceNounSet.has(phrase) || combinedSourceLower.includes(phrase.toLowerCase());
+  //
+  // Second, related real bug found live the same day: the SAME greedy
+  // regex also absorbs an incidental LEADING word that isn't part of
+  // the real entity at all -- "Experienced Senior Backend" (from
+  // "Experienced Senior Backend Engineer with...") vs. the real source
+  // phrase "Senior Backend Engineer" fails both the exact-match and the
+  // whole-phrase-substring check, even though "Senior Backend" (the
+  // real, sourced part) is right there. Denylisting "Experienced" the
+  // same way "At"/"The" were denylisted earlier is whack-a-mole -- any
+  // resume-summary opener ("Accomplished", "Dedicated", "Results-driven"
+  // as its own capitalized word, ...) reproduces this. Instead, if the
+  // full phrase isn't sourced, retry with its leading word stripped
+  // (these phrases are at most 3 words, so this is one bounded retry,
+  // not open-ended recursion) -- a positive-evidence check (the
+  // shortened phrase genuinely traces to source) rather than trying to
+  // enumerate every possible incidental opener word.
+  const isPhraseSourced = (phrase) => {
+    if (sourceNounSet.has(phrase) || combinedSourceLower.includes(phrase.toLowerCase())) return true;
+    const words = phrase.split(/\s+/);
+    if (words.length < 2) return false;
+    const suffix = words.slice(1).join(' ');
+    return sourceNounSet.has(suffix) || combinedSourceLower.includes(suffix.toLowerCase());
+  };
 
   const generatedProper = extractProperNouns(generatedText, true);
   const newMultiWord = [...new Set(generatedProper.multiWord.filter(n => !isPhraseSourced(n)))];
