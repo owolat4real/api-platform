@@ -109,5 +109,12 @@ test('checkNumbers:false (the /cv/optimise add_metrics case) skips new numbers b
   assert.strictEqual(stillCatchesEmployer.flagged, true, 'a fabricated employer name must still be caught even with checkNumbers:false');
 });
 
+test('ALL-CAPS section headers (real resume_auto_optimiser output shape) are not mistaken for fabricated entities', () => {
+  const cv = 'Ada Okonkwo\nSoftware Engineer\nExperience: Built REST APIs at Tech Solutions Ltd.';
+  const generated = 'PROFESSIONAL SUMMARY\nExperienced engineer.\n\nTECHNICAL SKILLS\nPython, REST APIs.\n\nEXPERIENCE\nBuilt REST APIs at Tech Solutions Ltd.';
+  const result = checkFabrication(generated, [cv]);
+  assert.strictEqual(result.flagged, false);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

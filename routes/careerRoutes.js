@@ -336,7 +336,13 @@ router.post('/cv/optimise', async (req, res) => {
       // caller downloads and submits to an employer -- not the changes/
       // summary metadata, which legitimately narrates what was added.
       (r) => { try { return JSON.parse(r.content).optimised_cv || ''; } catch (_) { return ''; } },
-      [cv_text, job_description],
+      // role was missing here (real bug, live-caught 2026-08-30): the
+      // prompt explicitly tells the model the target role and asks it to
+      // optimise toward it, so the role legitimately appears in the
+      // output (e.g. a "Senior Backend Engineer" mention in the summary)
+      // -- omitting it here meant that legitimate echo got flagged as an
+      // unsourced fabricated entity on every single call.
+      [cv_text, job_description, role],
       { endpoint: '/cv/optimise', developerId: req.apiKey.developerId },
       // add_metrics defaults to true (see pCVOptimise) -- an advertised,
       // opt-in feature that means the model IS supposed to add numbers

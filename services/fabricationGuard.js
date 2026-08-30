@@ -29,7 +29,15 @@ const SECTION_LABELS = new Set([
   'Professional Summary', 'Technical Skills', 'Professional Experience',
   'Work Experience', 'Projects', 'Education', 'Certifications',
   'Publications', 'Experience', 'Summary', 'Skills',
-]);
+].map(s => s.toLowerCase()));
+// Real bug found live (2026-08-30): resume_auto_optimiser's real output
+// writes section headers in ALL CAPS ("PROFESSIONAL SUMMARY"), which
+// never matched this Set's Title Case entries at all -- every section
+// heading in a real CV rewrite was getting flagged as a fabricated
+// multi-word entity. Case-insensitive lookup everywhere this Set is checked.
+function isSectionLabel(phrase) {
+  return SECTION_LABELS.has((phrase || '').toLowerCase());
+}
 
 // Real gap found while testing (2026-08-30): cs_fixed's original regex
 // requires 1-2 ADDITIONAL capitalized words after the first ("Tech
@@ -102,7 +110,7 @@ function extractNumericClaims(text) {
 function extractProperNouns(text, strict) {
   const t = text || '';
   const rawMultiWord = (t.match(/\b[A-Z][a-zA-Z]+(?:[^\S\n]+[A-Z][a-zA-Z]+){1,2}\b/g) || [])
-    .filter(m => !SECTION_LABELS.has(m));
+    .filter(m => !isSectionLabel(m));
   // A phrase whose FIRST word is a common/function word ("At Paystack",
   // "The Company") is almost always an artifact of sentence-initial
   // capitalization coincidentally sitting next to a real proper noun --
@@ -124,7 +132,7 @@ function extractProperNouns(text, strict) {
   // its own independent check.
   const wordsInPhrases = new Set(multiWord.flatMap(p => p.split(/\s+/)));
   const singleWord = (t.match(singleWordPattern) || [])
-    .filter(m => !COMMON_SENTENCE_WORDS.has(m) && !SECTION_LABELS.has(m) && !wordsInPhrases.has(m));
+    .filter(m => !COMMON_SENTENCE_WORDS.has(m) && !isSectionLabel(m) && !wordsInPhrases.has(m));
   return { multiWord, singleWord };
 }
 
@@ -158,13 +166,25 @@ function extractProperNouns(text, strict) {
 function checkFabrication(generatedText, sourceTexts, options = {}) {
   const checkNumbers = options.checkNumbers !== false;
   const combinedSource = (sourceTexts || []).filter(Boolean).join('\n');
+  const combinedSourceLower = combinedSource.toLowerCase();
   const sourceProper = extractProperNouns(combinedSource, false);
   const sourceNounSet = new Set([...sourceProper.multiWord, ...sourceProper.singleWord]);
   const sourceNumbers = new Set(extractNumericClaims(combinedSource));
 
+  // Real bug found live (2026-08-30): the greedy multi-word regex chunks
+  // by whatever capitalized run happens to be adjacent -- "Built REST
+  // APIs" in source vs. "REST APIs" alone in generated text (no "Built"
+  // before it this time) are genuinely the same real, sourced phrase,
+  // but never matched as equal strings in sourceNounSet. A literal
+  // (case-insensitive) substring check against the raw source text
+  // catches this directly, independent of how either side happened to
+  // chunk -- a phrase that's truly new to the source can't be a
+  // substring of it no matter how chunking varies.
+  const isPhraseSourced = (phrase) => sourceNounSet.has(phrase) || combinedSourceLower.includes(phrase.toLowerCase());
+
   const generatedProper = extractProperNouns(generatedText, true);
-  const newMultiWord = [...new Set(generatedProper.multiWord.filter(n => !sourceNounSet.has(n)))];
-  const newSingleWord = [...new Set(generatedProper.singleWord.filter(n => !sourceNounSet.has(n)))];
+  const newMultiWord = [...new Set(generatedProper.multiWord.filter(n => !isPhraseSourced(n)))];
+  const newSingleWord = [...new Set(generatedProper.singleWord.filter(n => !isPhraseSourced(n)))];
   const newNumbers = checkNumbers
     ? [...new Set(extractNumericClaims(generatedText).filter(n => !sourceNumbers.has(n)))]
     : [];
