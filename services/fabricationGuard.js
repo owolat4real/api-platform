@@ -226,4 +226,31 @@ function checkFabrication(generatedText, sourceTexts, options = {}) {
   };
 }
 
-module.exports = { checkFabrication, extractNumericClaims, extractProperNouns };
+// Real bug independently reproduced live (2026-08-30), the same class a
+// pasted external review had already flagged ("...with a of reducing API
+// latency..."): /cv/optimise produced "...for fintech products. of
+// optimizing database query performance..." -- a dropped word (almost
+// certainly "a track record" or similar) leaving a sentence fragment
+// that starts with a lowercase preposition/conjunction right after a
+// period. A normal English sentence never legitimately starts this way
+// -- when one of these words IS a real sentence-starter ("By the end of
+// the project...", "For the past two years..."), it's capitalized. A
+// lowercase one immediately after ". " is a mechanical, high-confidence
+// signal of exactly this defect class, not a judgment call.
+const DANGLING_SENTENCE_STARTERS = /\.\s+(of|with|and|but|or|in|at|for|to|from|by|as|that|which|who|into|onto|than|while|when)\b/;
+
+/**
+ * @param {string} text
+ * @returns {{flagged: boolean, snippet: string|null}} snippet is the
+ *   matched fragment (a few words either side) for logging/debugging --
+ *   never shown to the end user, this text is never shipped either way.
+ */
+function checkBrokenSentence(text) {
+  const t = text || '';
+  const match = t.match(DANGLING_SENTENCE_STARTERS);
+  if (!match) return { flagged: false, snippet: null };
+  const idx = match.index || 0;
+  return { flagged: true, snippet: t.slice(Math.max(0, idx - 30), idx + 40) };
+}
+
+module.exports = { checkFabrication, checkBrokenSentence, extractNumericClaims, extractProperNouns };

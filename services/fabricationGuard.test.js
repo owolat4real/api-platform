@@ -7,7 +7,7 @@
  * middleware/errorContract.test.js and cql/cql.test.js.
  */
 const assert = require('assert');
-const { checkFabrication } = require('./fabricationGuard');
+const { checkFabrication, checkBrokenSentence } = require('./fabricationGuard');
 
 let passed = 0, failed = 0;
 function test(name, fn) {
@@ -113,6 +113,33 @@ test('ALL-CAPS section headers (real resume_auto_optimiser output shape) are not
   const cv = 'Ada Okonkwo\nSoftware Engineer\nExperience: Built REST APIs at Tech Solutions Ltd.';
   const generated = 'PROFESSIONAL SUMMARY\nExperienced engineer.\n\nTECHNICAL SKILLS\nPython, REST APIs.\n\nEXPERIENCE\nBuilt REST APIs at Tech Solutions Ltd.';
   const result = checkFabrication(generated, [cv]);
+  assert.strictEqual(result.flagged, false);
+});
+
+console.log('checkBrokenSentence');
+
+test('the real live-caught bug: a dropped word leaves a lowercase-preposition sentence fragment', () => {
+  const text = 'Committed to building reliable systems for fintech products. of optimizing database query performance, driving zero-downtime migrations.';
+  const result = checkBrokenSentence(text);
+  assert.strictEqual(result.flagged, true);
+  assert.ok(result.snippet.includes('of optimizing'));
+});
+
+test('a real sentence that legitimately starts with a capitalized preposition is not flagged', () => {
+  const text = 'Shipped the migration ahead of schedule. Of the three approaches considered, this one had the lowest risk.';
+  const result = checkBrokenSentence(text);
+  assert.strictEqual(result.flagged, false);
+});
+
+test('normal, well-formed prose with no dangling fragments is not flagged', () => {
+  const text = 'Built REST APIs using Python and FastAPI. Reduced average response time through query optimisation. Mentored two junior engineers.';
+  const result = checkBrokenSentence(text);
+  assert.strictEqual(result.flagged, false);
+});
+
+test('a mid-sentence lowercase preposition (not right after a period) is not flagged -- only the post-period position is the real signal', () => {
+  const text = 'Built a system consisting of several independent services, each responsible for one domain.';
+  const result = checkBrokenSentence(text);
   assert.strictEqual(result.flagged, false);
 });
 

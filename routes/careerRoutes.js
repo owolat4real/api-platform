@@ -12,7 +12,7 @@ const { rpmLimiter }        = require('../middleware/rateLimit');
 const { callCareerCamp }    = require('../proxy/campProxy');
 const { getDB }             = require('../db/connection');
 const { MODEL_DISPLAY_NAMES, alertAdmin } = require('../keys/keyManager');
-const { checkFabrication }  = require('../services/fabricationGuard');
+const { checkFabrication, checkBrokenSentence } = require('../services/fabricationGuard');
 
 router.use(authMiddleware);
 router.use(rpmLimiter);
@@ -59,6 +59,7 @@ function err(req, res, e) {
   if (e.code === 'model_unavailable')         return res.status(503).json({ error: { code: e.code, message: e.message, request_id: req_id(req) } });
   if (e.code === 'generation_parse_error')    return res.status(503).json({ error: { code: e.code, message: e.message, request_id: req_id(req) } });
   if (e.code === 'generation_fabrication_risk') return res.status(503).json({ error: { code: e.code, message: e.message, request_id: req_id(req) } });
+  if (e.code === 'generation_quality_risk')   return res.status(503).json({ error: { code: e.code, message: e.message, request_id: req_id(req) } });
   if (e.code === 'request_timeout')           return res.status(504).json({ error: { code: e.code, message: e.message, request_id: req_id(req) } });
   console.error('[careerlm-api]', e.message);
   res.status(500).json({ error: { code: 'internal_error', message: 'An error occurred. Retry or contact api@careerstudiomax.com', request_id: req_id(req) } });
@@ -70,18 +71,27 @@ function done(res, result) {
 }
 
 /**
- * Retry-once-then-fail-honestly wrapper around a fabrication-prone call.
- * Live-caught (2026-08-30): /cover-letter/generate produced invented
- * metrics ("2 million daily transactions", "1.8x increase in client
- * integrations") absent from the submitted CV, each tagged [VERIFIED] --
- * a fabricated claim wearing the platform's own highest-trust label.
+ * Retry-once-then-fail-honestly wrapper around a quality/trust-prone call.
+ * Checks two independent real defect classes found live the same day:
+ *
+ * 1. Fabrication (2026-08-30): /cover-letter/generate produced invented
+ *    metrics ("2 million daily transactions", "1.8x increase in client
+ *    integrations") absent from the submitted CV, each tagged [VERIFIED]
+ *    -- a fabricated claim wearing the platform's own highest-trust label.
+ * 2. Broken sentences (2026-08-30, same day, same endpoint family):
+ *    "...for fintech products. of optimizing database query
+ *    performance..." -- a dropped word left a sentence fragment starting
+ *    with a lowercase preposition right after a period, independently
+ *    reproduced live and matching a defect class a pasted external
+ *    review had already flagged elsewhere on this platform.
+ *
  * Unlike cs_fixed's CV optimizer (which can safely fall back to the
- * user's own original CV text on persistent fabrication), neither a
- * cover letter nor this endpoint's {optimised_cv, changes, scores} JSON
- * shape has a safe "original" to substitute -- so a still-fabricating
- * retry fails the request honestly (503, real distinct code, retryable)
- * instead of silently shipping unverified content. Every fabrication
- * event is alerted so the real rate is visible, not silent.
+ * user's own original CV text on persistent failure), neither a cover
+ * letter nor this endpoint's {optimised_cv, changes, scores} JSON shape
+ * has a safe "original" to substitute -- so a still-broken retry fails
+ * the request honestly (503, real distinct code, retryable) instead of
+ * silently shipping unverified or ungrammatical content. Every failure
+ * is alerted so the real rate is visible, not silent.
  * @param {() => Promise<{content:string}>} callFn - re-issues the same
  *   underlying callCareerCamp call
  * @param {(result:object) => string} extractText - pulls the checkable
@@ -92,23 +102,33 @@ function done(res, result) {
  *   to fabricationGuard.checkFabrication -- see its own doc comment for
  *   why /cv/optimise needs checkNumbers:false by default.
  */
+function _qualityIssue(text, sourceTexts, guardOptions) {
+  const fabrication = checkFabrication(text, sourceTexts, guardOptions);
+  if (fabrication.flagged) return { kind: 'fabrication', detail: `entities: ${fabrication.suspiciousEntities.join(', ')}` };
+  const broken = checkBrokenSentence(text);
+  if (broken.flagged) return { kind: 'broken_sentence', detail: `fragment: "...${broken.snippet}..."` };
+  return null;
+}
+
 async function withFabricationGuard(callFn, extractText, sourceTexts, meta, guardOptions = {}) {
   let result = await callFn();
-  let check = checkFabrication(extractText(result), sourceTexts, guardOptions);
-  if (check.flagged) {
-    const msg = `entities: ${check.suspiciousEntities.join(', ')} — developer ${meta.developerId} — endpoint ${meta.endpoint}`;
-    console.warn(`[fabricationGuard] Possible fabrication, retrying: ${msg}`);
-    alertAdmin('fabrication_detected', `${meta.endpoint} produced unsourced claims on first pass — retrying once: ${msg}`).catch(() => {});
+  let issue = _qualityIssue(extractText(result), sourceTexts, guardOptions);
+  if (issue) {
+    const msg = `${issue.kind} — ${issue.detail} — developer ${meta.developerId} — endpoint ${meta.endpoint}`;
+    console.warn(`[fabricationGuard] Possible ${issue.kind}, retrying: ${msg}`);
+    alertAdmin(`${issue.kind}_detected`, `${meta.endpoint} produced a ${issue.kind} issue on first pass — retrying once: ${msg}`).catch(() => {});
     const retryResult = await callFn();
-    const retryCheck = checkFabrication(extractText(retryResult), sourceTexts, guardOptions);
-    if (!retryCheck.flagged) {
+    const retryIssue = _qualityIssue(extractText(retryResult), sourceTexts, guardOptions);
+    if (!retryIssue) {
       result = retryResult;
     } else {
-      const msg2 = `entities: ${retryCheck.suspiciousEntities.join(', ')} — developer ${meta.developerId} — endpoint ${meta.endpoint}`;
-      console.warn(`[fabricationGuard] Still fabricating after retry, failing request: ${msg2}`);
-      alertAdmin('fabrication_after_retry', `${meta.endpoint} kept producing unsourced claims after retry — request failed rather than shipping fabricated content: ${msg2}`).catch(() => {});
-      const err = new Error('The AI engine produced unverifiable claims for this request — please retry');
-      err.code = 'generation_fabrication_risk';
+      const msg2 = `${retryIssue.kind} — ${retryIssue.detail} — developer ${meta.developerId} — endpoint ${meta.endpoint}`;
+      console.warn(`[fabricationGuard] Still a ${retryIssue.kind} issue after retry, failing request: ${msg2}`);
+      alertAdmin(`${retryIssue.kind}_after_retry`, `${meta.endpoint} kept producing a ${retryIssue.kind} issue after retry — request failed rather than shipping it: ${msg2}`).catch(() => {});
+      const err = new Error(retryIssue.kind === 'fabrication'
+        ? 'The AI engine produced unverifiable claims for this request — please retry'
+        : 'The AI engine produced malformed text for this request — please retry');
+      err.code = retryIssue.kind === 'fabrication' ? 'generation_fabrication_risk' : 'generation_quality_risk';
       err.status = 503;
       throw err;
     }
