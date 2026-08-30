@@ -64,23 +64,44 @@ async function callCareerCamp({ feature_id, user_input, user_id, messages = [], 
     if (schema) {
       const cleaned = _extractJSONText(content);
       if (!cleaned) {
+        // Real, honest classification (2026-08-30): this is a parsing/
+        // validation failure on a model result that DID come back --
+        // not a "the engine is unreachable" outage. It was previously
+        // thrown as 'model_unavailable', the same code used a few lines
+        // below for a genuine connection failure -- indistinguishable to
+        // a caller, and misleading: retry logic built around "wait for
+        // the service to come back" won't fix a malformed-generation
+        // problem the way it fixes a real outage (though retrying IS
+        // still the right immediate action either way).
         const err  = new Error('The AI engine returned an unusable result for this request — please retry');
-        err.code   = 'model_unavailable';
+        err.code   = 'generation_parse_error';
         err.status = 503;
         throw err;
       }
       content = cleaned;
     }
 
+    // Real gap found live (2026-08-30): careercamp-ai's /v1/camp/:featureId
+    // response has no `usage` object at all (confirmed via its own source
+    // -- unlike the separate /v1/chat/completions-style endpoint, which
+    // does compute real token counts), so prompt_tokens was silently
+    // always 0 -- every caller using this for billing/quota visibility
+    // was seeing a flatly wrong number, not just an imprecise one.
+    // completion_tokens already had a sensible char-count estimate for
+    // exactly this "upstream didn't report it" case; prompt_tokens never
+    // got the same treatment. Estimated the same way (~4 chars/token),
+    // from the real user_input this function was actually sent.
+    const promptTokenEstimate = Math.ceil((user_input || '').length / 4);
+    const completionTokenEstimate = Math.ceil((data.content.length || 0) / 4);
     return {
       content,
       model:        data.model    || 'cs-sonnet',
       piiProtected: data.piiProtected || false,
       usedFallback: data.usedFallback || false,
       usage: {
-        prompt_tokens:     data.usage?.prompt_tokens     || 0,
-        completion_tokens: data.usage?.completion_tokens || Math.ceil((data.content.length || 0) / 4),
-        total_tokens:      data.usage?.total_tokens      || Math.ceil((data.content.length || 0) / 4),
+        prompt_tokens:     data.usage?.prompt_tokens     || promptTokenEstimate,
+        completion_tokens: data.usage?.completion_tokens || completionTokenEstimate,
+        total_tokens:      data.usage?.total_tokens      || (promptTokenEstimate + completionTokenEstimate),
       },
     };
   } catch (e) {

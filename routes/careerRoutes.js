@@ -11,7 +11,8 @@ const { authMiddleware }    = require('../middleware/auth');
 const { rpmLimiter }        = require('../middleware/rateLimit');
 const { callCareerCamp }    = require('../proxy/campProxy');
 const { getDB }             = require('../db/connection');
-const { MODEL_DISPLAY_NAMES } = require('../keys/keyManager');
+const { MODEL_DISPLAY_NAMES, alertAdmin } = require('../keys/keyManager');
+const { checkFabrication }  = require('../services/fabricationGuard');
 
 router.use(authMiddleware);
 router.use(rpmLimiter);
@@ -56,6 +57,8 @@ async function _resolveContext(req, fields) {
 function err(req, res, e) {
   if (e.code === 'content_policy_violation') return res.status(422).json({ error: { code: e.code, message: e.message, request_id: req_id(req) } });
   if (e.code === 'model_unavailable')         return res.status(503).json({ error: { code: e.code, message: e.message, request_id: req_id(req) } });
+  if (e.code === 'generation_parse_error')    return res.status(503).json({ error: { code: e.code, message: e.message, request_id: req_id(req) } });
+  if (e.code === 'generation_fabrication_risk') return res.status(503).json({ error: { code: e.code, message: e.message, request_id: req_id(req) } });
   if (e.code === 'request_timeout')           return res.status(504).json({ error: { code: e.code, message: e.message, request_id: req_id(req) } });
   console.error('[careerlm-api]', e.message);
   res.status(500).json({ error: { code: 'internal_error', message: 'An error occurred. Retry or contact api@careerstudiomax.com', request_id: req_id(req) } });
@@ -64,6 +67,50 @@ function err(req, res, e) {
 function done(res, result) {
   res.locals.tokensUsed = result.usage?.total_tokens || 0;
   res.locals.modelUsed  = result.model;
+}
+
+/**
+ * Retry-once-then-fail-honestly wrapper around a fabrication-prone call.
+ * Live-caught (2026-08-30): /cover-letter/generate produced invented
+ * metrics ("2 million daily transactions", "1.8x increase in client
+ * integrations") absent from the submitted CV, each tagged [VERIFIED] --
+ * a fabricated claim wearing the platform's own highest-trust label.
+ * Unlike cs_fixed's CV optimizer (which can safely fall back to the
+ * user's own original CV text on persistent fabrication), neither a
+ * cover letter nor this endpoint's {optimised_cv, changes, scores} JSON
+ * shape has a safe "original" to substitute -- so a still-fabricating
+ * retry fails the request honestly (503, real distinct code, retryable)
+ * instead of silently shipping unverified content. Every fabrication
+ * event is alerted so the real rate is visible, not silent.
+ * @param {() => Promise<{content:string}>} callFn - re-issues the same
+ *   underlying callCareerCamp call
+ * @param {(result:object) => string} extractText - pulls the checkable
+ *   text out of a result (raw content, or a parsed JSON field)
+ * @param {string[]} sourceTexts - the real fields the caller submitted
+ * @param {{endpoint:string, developerId:string}} meta
+ */
+async function withFabricationGuard(callFn, extractText, sourceTexts, meta) {
+  let result = await callFn();
+  let check = checkFabrication(extractText(result), sourceTexts);
+  if (check.flagged) {
+    const msg = `entities: ${check.suspiciousEntities.join(', ')} — developer ${meta.developerId} — endpoint ${meta.endpoint}`;
+    console.warn(`[fabricationGuard] Possible fabrication, retrying: ${msg}`);
+    alertAdmin('fabrication_detected', `${meta.endpoint} produced unsourced claims on first pass — retrying once: ${msg}`).catch(() => {});
+    const retryResult = await callFn();
+    const retryCheck = checkFabrication(extractText(retryResult), sourceTexts);
+    if (!retryCheck.flagged) {
+      result = retryResult;
+    } else {
+      const msg2 = `entities: ${retryCheck.suspiciousEntities.join(', ')} — developer ${meta.developerId} — endpoint ${meta.endpoint}`;
+      console.warn(`[fabricationGuard] Still fabricating after retry, failing request: ${msg2}`);
+      alertAdmin('fabrication_after_retry', `${meta.endpoint} kept producing unsourced claims after retry — request failed rather than shipping fabricated content: ${msg2}`).catch(() => {});
+      const err = new Error('The AI engine produced unverifiable claims for this request — please retry');
+      err.code = 'generation_fabrication_risk';
+      err.status = 503;
+      throw err;
+    }
+  }
+  return result;
 }
 
 /* ── PROMPT BUILDERS ─────────────────────────────────────── */
@@ -267,12 +314,20 @@ router.post('/cv/optimise', async (req, res) => {
     const ctx = await _resolveContext(req, ['target_role', 'target_country']);
     const role = target_role || ctx.target_role;
     const country = target_country || ctx.target_country || 'GB';
-    const result = await callCareerCamp({
-      feature_id: 'resume_auto_optimiser',
-      user_input: pCVOptimise(cv_text, job_description, role, country, options),
-      user_id:    req.apiKey.developerId,
-      schema:     'cv_rewrite',
-    }, req.apiKey);
+    const result = await withFabricationGuard(
+      () => callCareerCamp({
+        feature_id: 'resume_auto_optimiser',
+        user_input: pCVOptimise(cv_text, job_description, role, country, options),
+        user_id:    req.apiKey.developerId,
+        schema:     'cv_rewrite',
+      }, req.apiKey),
+      // Checked field is optimised_cv specifically -- the literal text a
+      // caller downloads and submits to an employer -- not the changes/
+      // summary metadata, which legitimately narrates what was added.
+      (r) => { try { return JSON.parse(r.content).optimised_cv || ''; } catch (_) { return ''; } },
+      [cv_text, job_description],
+      { endpoint: '/cv/optimise', developerId: req.apiKey.developerId },
+    );
     done(res, result);
     res.json({ ...result, request_id: req_id(req), model: maskModel(result.model) });
   } catch (e) { err(req, res, e); }
@@ -311,11 +366,16 @@ router.post('/cover-letter/generate', async (req, res) => {
   try {
     const ctx     = await _resolveContext(req, ['target_country']);
     const country = target_country || ctx.target_country || 'GB';
-    const result = await callCareerCamp({
-      feature_id: featureId,
-      user_input: pCoverLetter(cv_text, job_description, company_name, candidate_name, modeNum, country, tone, options),
-      user_id:    req.apiKey.developerId,
-    }, req.apiKey);
+    const result = await withFabricationGuard(
+      () => callCareerCamp({
+        feature_id: featureId,
+        user_input: pCoverLetter(cv_text, job_description, company_name, candidate_name, modeNum, country, tone, options),
+        user_id:    req.apiKey.developerId,
+      }, req.apiKey),
+      (r) => r.content,
+      [cv_text, job_description, company_name, candidate_name],
+      { endpoint: '/cover-letter/generate', developerId: req.apiKey.developerId },
+    );
     done(res, result);
     res.json({ ...result, mode: modeNum, mode_name: COVER_MODES[modeNum]?.split(':')[0], request_id: req_id(req), model: maskModel(result.model) });
   } catch (e) { err(req, res, e); }
