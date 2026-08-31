@@ -24,6 +24,10 @@ async function connect() {
     // ever insert one record; TTL so 24h-old records clean up on their own.
     _db.collection('idempotency_records').createIndex({ compositeKey: 1 }, { unique: true }),
     _db.collection('idempotency_records').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+    // Free-tier monthly token budget (keys/devPlatformQuota.js) -- one doc
+    // per developer per calendar month, same yearMonth-document-per-month
+    // pattern cs_fixed's Cstm2Usage already uses.
+    _db.collection('dev_platform_token_usage').createIndex({ developerId: 1, yearMonth: 1 }, { unique: true }),
   ]);
   return _db;
 }

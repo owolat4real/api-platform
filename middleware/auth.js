@@ -22,7 +22,9 @@ async function authMiddleware(req, res, next) {
   const validation = await KeyManager.validate(rawKey);
 
   if (!validation.valid) {
-    const status = validation.reason === 'daily_limit_exceeded' ? 429 : 401;
+    const status = validation.reason === 'daily_limit_exceeded' ? 429
+      : validation.reason === 'monthly_token_budget_exceeded' ? 402
+      : 401;
     const retryable = status === 429;
     if (retryable) res.setHeader('Retry-After', secondsUntilMidnight());
     return res.status(status).json({
@@ -56,6 +58,7 @@ function getErrorMessage(v) {
     invalid_format:       'API key format is invalid — keys start with csk_live_v1_, csk_test_v1_, or csk_free_v1_',
     key_not_found:        'API key not found or has been revoked',
     daily_limit_exceeded: `Daily limit of ${v.limit?.toLocaleString()} requests reached — resets at midnight UTC. Upgrade at ${PORTAL_URL}/pricing`,
+    monthly_token_budget_exceeded: `Free tier's monthly token budget (${v.limit?.toLocaleString()}) is used up for this calendar month. Upgrade at ${PORTAL_URL}/pricing`,
   })[v.reason] || 'Authentication failed';
 }
 

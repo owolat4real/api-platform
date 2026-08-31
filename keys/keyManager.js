@@ -2,6 +2,7 @@
 const crypto      = require('crypto');
 const nodemailer  = require('nodemailer');
 const { getDB }   = require('../db/connection');
+const devPlatformQuota = require('./devPlatformQuota');
 
 // Live-caught (2026-08-24): EMAIL_FROM was set directly in this service's
 // own Render dashboard to "CareerStudioMax Developer Cloud
@@ -169,10 +170,23 @@ class KeyManager {
   }
 
   /* ── CREATE ───────────────────────────────────────────────── */
-  static async create({ developerId, tier, environment = 'live', name = 'Default Key', metadata = {} }) {
+  // _skipGenerationCap is set by rotate() below -- a rotation mints a new
+  // credential for an existing key, not a genuinely new key, and must
+  // never eat into the free-tier monthly generation cap the way a real
+  // additional-key creation would.
+  static async create({ developerId, tier, environment = 'live', name = 'Default Key', metadata = {}, _skipGenerationCap = false }) {
     const db         = getDB();
     const tierConfig = API_TIERS[tier];
     if (!tierConfig) throw new Error(`Unknown tier: ${tier}`);
+
+    if (!_skipGenerationCap) {
+      const genCheck = await devPlatformQuota.assertMonthlyKeyGenerationAllowed({ developerId, isFreeTier: tier === 'FREE' });
+      if (!genCheck.allowed) {
+        const e = new Error(`Free tier is limited to ${devPlatformQuota.FREE_TIER_MONTHLY_KEY_LIMIT} new keys per calendar month. You've generated ${genCheck.count} this month — try again next month or upgrade.`);
+        e.code = 'monthly_key_generation_limit';
+        throw e;
+      }
+    }
 
     const { key, keyHash, prefix } = this.generate(tier, environment);
     const dailyLimit = tierConfig.daily_requests === Infinity
@@ -236,6 +250,16 @@ class KeyManager {
       return { valid: false, reason: 'daily_limit_exceeded', limit: record.dailyLimit, resetAt: 'midnight UTC' };
     }
 
+    // Free-tier cumulative monthly token budget -- a separate control from
+    // the daily request-count limit above (a free key can stay under its
+    // daily request count while still consuming a lot of tokens per call).
+    if (record.tier === 'FREE') {
+      const budget = await devPlatformQuota.checkTokenBudget({ developerId: record.developerId, isFreeTier: true });
+      if (!budget.allowed) {
+        return { valid: false, reason: 'monthly_token_budget_exceeded', limit: budget.limit };
+      }
+    }
+
     return { valid: true, record };
   }
 
@@ -244,7 +268,7 @@ class KeyManager {
     if (!keyHash) return;
     try {
       const db = getDB();
-      await db.collection('api_keys').updateOne(
+      const updated = await db.collection('api_keys').findOneAndUpdate(
         { keyHash },
         {
           $inc: { totalRequests: 1, todayRequests: 1, totalTokens: tokens || 0 },
@@ -255,8 +279,18 @@ class KeyManager {
               $slice: -100,
             },
           },
-        }
+        },
+        { projection: { developerId: 1, tier: 1 } },
       );
+      // Free-tier cumulative monthly token budget -- totalTokens above is
+      // an all-time counter (never reset), this is the real, calendar-
+      // month-scoped figure devPlatformQuota.checkTokenBudget reads.
+      // mongodb driver v6's findOneAndUpdate returns the document itself
+      // (not the older {value: doc} shape) since includeResultMetadata
+      // wasn't requested.
+      if (updated && updated.tier === 'FREE' && tokens > 0) {
+        devPlatformQuota.recordTokenUsage({ developerId: updated.developerId, tokens });
+      }
     } catch (_) {}
   }
 
@@ -270,7 +304,8 @@ class KeyManager {
       developerId,
       tier:     old.tier,
       name:     old.name + ' (rotated)',
-      metadata: old.metadata || {},
+      metadata: { ...(old.metadata || {}), rotatedFrom: oldKeyHash },
+      _skipGenerationCap: true,
     });
 
     await db.collection('api_keys').updateOne(
