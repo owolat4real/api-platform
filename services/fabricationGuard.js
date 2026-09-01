@@ -253,4 +253,73 @@ function checkBrokenSentence(text) {
   return { flagged: true, snippet: t.slice(Math.max(0, idx - 30), idx + 40) };
 }
 
-module.exports = { checkFabrication, checkBrokenSentence, extractNumericClaims, extractProperNouns };
+// Gap closed 2026-09-01: this file already caught unsourced entities
+// (checkFabrication above) -- the exact defect class of a fabricated
+// number/name tagged [VERIFIED] -- but two adjacent, independently
+// confirmed defect classes were never checked here at all, even though
+// this module is the [VERIFIED]-integrity enforcement point for this
+// whole service (the "Developer Cloud" platform named in the platform-
+// wide remediation brief's Part 2, which called for the same shared
+// package deployed everywhere a trust label gets emitted). Both mirror
+// cs_fixed's services/claimVerificationGuard.js Rules B/C, ported (not
+// shared -- separate repo/process, same reasoning as the rest of this
+// file) rather than reimplemented from scratch.
+const HEDGE_WORDS = /\b(est\.?|estimated|approximately|likely|probably|around|roughly)\b|~/i;
+
+/**
+ * Rule B: [VERIFIED] must never co-occur with a hedge word in the same
+ * claim -- a claim cannot be simultaneously estimated and verified.
+ * @param {string} text
+ * @returns {{flagged: boolean, snippet: string|null}}
+ */
+function checkHedgeContradiction(text) {
+  const t = text || '';
+  if (!/\[VERIFIED\]/i.test(t)) return { flagged: false, snippet: null };
+  // Only a hedge word appearing BEFORE the tag (i.e. hedging the same
+  // claim the tag is attached to) is a contradiction -- a hedge word
+  // elsewhere in unrelated text shouldn't flag an otherwise-clean
+  // [VERIFIED] claim on a different sentence.
+  const tagIdx = t.search(/\[VERIFIED\]/i);
+  // Real bug found while testing: naive lastIndexOf('.', tagIdx) treats
+  // "est."'s OWN period as the clause boundary, slicing the hedge word
+  // itself out of the checked clause before the regex ever sees it --
+  // the same abbreviation-period-mistaken-for-sentence-end class this
+  // session already found once in cs_fixed's claimVerificationGuard.js.
+  // A real sentence boundary requires the period to be followed by
+  // whitespace + an uppercase letter (or immediately precede a newline),
+  // not just be any "." anywhere in the preceding text.
+  let clauseStart = 0;
+  const newlineIdx = t.lastIndexOf('\n', tagIdx);
+  for (let i = tagIdx - 1; i >= 0; i--) {
+    if (t[i] === '.' && /\s/.test(t[i + 1] || '') && /[A-Z]/.test(t[i + 2] || '')) { clauseStart = i + 1; break; }
+  }
+  clauseStart = Math.max(clauseStart, newlineIdx + 1);
+  const clause = t.slice(clauseStart, tagIdx);
+  const m = clause.match(HEDGE_WORDS);
+  if (!m) return { flagged: false, snippet: null };
+  return { flagged: true, snippet: t.slice(Math.max(0, tagIdx - 40), tagIdx + 10) };
+}
+
+/**
+ * Rule C: [VERIFIED] attached to a bare name/short phrase with no
+ * accompanying checkable claim is stripped -- a platform's mere
+ * existence ("LinkedIn [VERIFIED]") is not itself a verified fact.
+ * @param {string} text
+ * @returns {{flagged: boolean, snippet: string|null}}
+ */
+function checkBareNameTag(text) {
+  const t = text || '';
+  const re = /\[VERIFIED\]/gi;
+  let m;
+  while ((m = re.exec(t))) {
+    const clauseStart = Math.max(0, t.lastIndexOf('.', m.index), t.lastIndexOf('\n', m.index)) || 0;
+    const before = t.slice(clauseStart, m.index).replace(/^[.\n]\s*/, '').trim();
+    const tokens = before.split(/\s+/).filter(Boolean);
+    if (tokens.length === 0 || tokens.length > 4) continue;
+    const isBareName = tokens.every(tok => /[A-Z]/.test(tok) || /^(and|&)$/i.test(tok)) && tokens.some(tok => /[A-Z]/.test(tok));
+    if (isBareName) return { flagged: true, snippet: t.slice(Math.max(0, m.index - 40), m.index + 10) };
+  }
+  return { flagged: false, snippet: null };
+}
+
+module.exports = { checkFabrication, checkBrokenSentence, checkHedgeContradiction, checkBareNameTag, extractNumericClaims, extractProperNouns };

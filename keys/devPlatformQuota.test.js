@@ -13,6 +13,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const dbConnection = require('../db/connection');
+const nodemailer = require('nodemailer');
 
 function fakeDb(collections) {
   return { collection: (name) => collections[name] };
@@ -62,6 +63,19 @@ test('assertMonthlyKeyGenerationAllowed — blocks once the free-tier limit is r
   assert.deepEqual(capturedFilter['metadata.rotatedFrom'], { $exists: false });
 });
 
+test('assertMonthlyKeyGenerationAllowed — extraFilter merges into the real query (environment:"live" exemption)', async (t) => {
+  let capturedFilter = null;
+  const originalGetDB = dbConnection.getDB;
+  dbConnection.getDB = () => fakeDb({
+    api_keys: { countDocuments: async (filter) => { capturedFilter = filter; return 0; } },
+  });
+  t.after(() => { dbConnection.getDB = originalGetDB; });
+
+  const { assertMonthlyKeyGenerationAllowed } = loadFresh();
+  await assertMonthlyKeyGenerationAllowed({ developerId: 'dev_1', isFreeTier: true, extraFilter: { environment: 'live' } });
+  assert.equal(capturedFilter.environment, 'live');
+});
+
 test('checkTokenBudget — real, honest zero for a developer with no usage doc yet', async (t) => {
   const originalGetDB = dbConnection.getDB;
   dbConnection.getDB = () => fakeDb({ dev_platform_token_usage: { findOne: async () => null } });
@@ -87,7 +101,10 @@ test('recordTokenUsage — upserts a real $inc into the real yearMonth document'
   const originalGetDB = dbConnection.getDB;
   dbConnection.getDB = () => fakeDb({
     dev_platform_token_usage: {
-      updateOne: async (filter, update, opts) => { capturedArgs = { filter, update, opts }; return {}; },
+      findOneAndUpdate: async (filter, update, opts) => {
+        capturedArgs = { filter, update, opts };
+        return { _id: 'doc1', tokenCount: 400, notified80: false, notified100: false };
+      },
     },
   });
   t.after(() => { dbConnection.getDB = originalGetDB; });
@@ -104,11 +121,164 @@ test('recordTokenUsage — upserts a real $inc into the real yearMonth document'
 test('recordTokenUsage — never writes for a zero token count', async (t) => {
   let called = false;
   const originalGetDB = dbConnection.getDB;
-  dbConnection.getDB = () => fakeDb({ dev_platform_token_usage: { updateOne: async () => { called = true; return {}; } } });
+  dbConnection.getDB = () => fakeDb({ dev_platform_token_usage: { findOneAndUpdate: async () => { called = true; return null; } } });
   t.after(() => { dbConnection.getDB = originalGetDB; });
 
   const { recordTokenUsage } = loadFresh();
   recordTokenUsage({ developerId: 'dev_1', tokens: 0 });
   await new Promise((r) => setImmediate(r));
   assert.equal(called, false);
+});
+
+// ── 80%/100% threshold warning emails (2026-09-01) ──────────────────────
+function mockTransport(capture) {
+  const originalCreateTransport = nodemailer.createTransport;
+  nodemailer.createTransport = (opts) => ({
+    sendMail: async (mailOpts) => { capture.push(mailOpts); return { messageId: 'fake' }; },
+  });
+  return () => { nodemailer.createTransport = originalCreateTransport; };
+}
+
+test('recordTokenUsage — crossing 80% atomically flips notified80 and sends a warning email', async (t) => {
+  const originalEnv = { ...process.env };
+  process.env.SMTP_HOST = 'smtp.test.example.com';
+  const sent = [];
+  const restoreTransport = mockTransport(sent);
+
+  const originalGetDB = dbConnection.getDB;
+  dbConnection.getDB = () => fakeDb({
+    dev_platform_token_usage: {
+      findOneAndUpdate: async () => ({ _id: 'doc2', tokenCount: 85000, notified80: false, notified100: false }),
+      updateOne: async (filter) => {
+        assert.deepEqual(filter, { _id: 'doc2', notified80: { $ne: true } });
+        return { matchedCount: 1 };
+      },
+    },
+    developers: { findOne: async () => ({ email: 'dev@example.com' }) },
+  });
+  t.after(() => { dbConnection.getDB = originalGetDB; process.env = originalEnv; restoreTransport(); });
+
+  const { recordTokenUsage } = loadFresh();
+  recordTokenUsage({ developerId: 'dev_1', tokens: 5000 });
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].to, 'dev@example.com');
+  // 85000/100000 = 85% -- the email reports the real crossed percentage,
+  // not a hardcoded "80%" (which would misreport a call that jumped
+  // straight from e.g. 70% to 85% in one increment).
+  assert.match(sent[0].subject, /85% of your monthly quota/);
+});
+
+test('recordTokenUsage — crossing 100% sends the limit-reached email, not the 80% one', async (t) => {
+  const originalEnv = { ...process.env };
+  process.env.SMTP_HOST = 'smtp.test.example.com';
+  const sent = [];
+  const restoreTransport = mockTransport(sent);
+
+  const originalGetDB = dbConnection.getDB;
+  dbConnection.getDB = () => fakeDb({
+    dev_platform_token_usage: {
+      findOneAndUpdate: async () => ({ _id: 'doc3', tokenCount: 120000, notified80: false, notified100: false }),
+      updateOne: async () => ({ matchedCount: 1 }),
+    },
+    developers: { findOne: async () => ({ email: 'dev@example.com' }) },
+  });
+  t.after(() => { dbConnection.getDB = originalGetDB; process.env = originalEnv; restoreTransport(); });
+
+  const { recordTokenUsage } = loadFresh();
+  recordTokenUsage({ developerId: 'dev_1', tokens: 120000 });
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].subject, /Monthly quota reached/);
+});
+
+test('recordTokenUsage — a concurrent duplicate flip (updateOne matches nothing) never double-sends', async (t) => {
+  const originalEnv = { ...process.env };
+  process.env.SMTP_HOST = 'smtp.test.example.com';
+  const sent = [];
+  const restoreTransport = mockTransport(sent);
+
+  const originalGetDB = dbConnection.getDB;
+  dbConnection.getDB = () => fakeDb({
+    dev_platform_token_usage: {
+      findOneAndUpdate: async () => ({ _id: 'doc4', tokenCount: 85000, notified80: false, notified100: false }),
+      updateOne: async () => ({ matchedCount: 0 }), // another concurrent request already won the flip
+    },
+    developers: { findOne: async () => ({ email: 'dev@example.com' }) },
+  });
+  t.after(() => { dbConnection.getDB = originalGetDB; process.env = originalEnv; restoreTransport(); });
+
+  const { recordTokenUsage } = loadFresh();
+  recordTokenUsage({ developerId: 'dev_1', tokens: 5000 });
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+
+  assert.equal(sent.length, 0);
+});
+
+test('recordTokenUsage — already-notified80 this month is never re-checked or re-sent', async (t) => {
+  const sent = [];
+  const restoreTransport = mockTransport(sent);
+  let updateOneCalled = false;
+
+  const originalGetDB = dbConnection.getDB;
+  dbConnection.getDB = () => fakeDb({
+    dev_platform_token_usage: {
+      findOneAndUpdate: async () => ({ _id: 'doc5', tokenCount: 90000, notified80: true, notified100: false }),
+      updateOne: async () => { updateOneCalled = true; return { matchedCount: 1 }; },
+    },
+  });
+  t.after(() => { dbConnection.getDB = originalGetDB; restoreTransport(); });
+
+  const { recordTokenUsage } = loadFresh();
+  recordTokenUsage({ developerId: 'dev_1', tokens: 1000 });
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+
+  assert.equal(updateOneCalled, false);
+  assert.equal(sent.length, 0);
+});
+
+test('recordTokenUsage — under 80% never touches updateOne or email at all', async (t) => {
+  const sent = [];
+  const restoreTransport = mockTransport(sent);
+  let updateOneCalled = false;
+
+  const originalGetDB = dbConnection.getDB;
+  dbConnection.getDB = () => fakeDb({
+    dev_platform_token_usage: {
+      findOneAndUpdate: async () => ({ _id: 'doc6', tokenCount: 50000, notified80: false, notified100: false }),
+      updateOne: async () => { updateOneCalled = true; return { matchedCount: 1 }; },
+    },
+  });
+  t.after(() => { dbConnection.getDB = originalGetDB; restoreTransport(); });
+
+  const { recordTokenUsage } = loadFresh();
+  recordTokenUsage({ developerId: 'dev_1', tokens: 1000 });
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+
+  assert.equal(updateOneCalled, false);
+  assert.equal(sent.length, 0);
+});
+
+test('recordTokenUsage — no SMTP_HOST configured, no createTransport call, no throw', async (t) => {
+  const originalEnv = { ...process.env };
+  delete process.env.SMTP_HOST;
+  let transportCalled = false;
+  const originalCreateTransport = nodemailer.createTransport;
+  nodemailer.createTransport = () => { transportCalled = true; return { sendMail: async () => {} }; };
+
+  const originalGetDB = dbConnection.getDB;
+  dbConnection.getDB = () => fakeDb({
+    dev_platform_token_usage: {
+      findOneAndUpdate: async () => ({ _id: 'doc7', tokenCount: 120000, notified80: false, notified100: false }),
+      updateOne: async () => ({ matchedCount: 1 }),
+    },
+  });
+  t.after(() => { dbConnection.getDB = originalGetDB; process.env = originalEnv; nodemailer.createTransport = originalCreateTransport; });
+
+  const { recordTokenUsage } = loadFresh();
+  assert.doesNotThrow(() => recordTokenUsage({ developerId: 'dev_1', tokens: 120000 }));
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(transportCalled, false);
 });

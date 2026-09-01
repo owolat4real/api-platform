@@ -179,10 +179,14 @@ class KeyManager {
     const tierConfig = API_TIERS[tier];
     if (!tierConfig) throw new Error(`Unknown tier: ${tier}`);
 
-    if (!_skipGenerationCap) {
-      const genCheck = await devPlatformQuota.assertMonthlyKeyGenerationAllowed({ developerId, isFreeTier: tier === 'FREE' });
+    // Test/sandbox keys are exempt from the monthly generation cap
+    // (2026-09-01) -- only 'live' key creation counts toward the real
+    // limit, same fix as cs_fixed's 3 other in-repo platforms that have
+    // an environment concept (CAMP, Transformer, CSVM).
+    if (!_skipGenerationCap && environment !== 'test') {
+      const genCheck = await devPlatformQuota.assertMonthlyKeyGenerationAllowed({ developerId, isFreeTier: tier === 'FREE', extraFilter: { environment: 'live' } });
       if (!genCheck.allowed) {
-        const e = new Error(`Free tier is limited to ${devPlatformQuota.FREE_TIER_MONTHLY_KEY_LIMIT} new keys per calendar month. You've generated ${genCheck.count} this month — try again next month or upgrade.`);
+        const e = new Error(`Free tier is limited to ${devPlatformQuota.FREE_TIER_MONTHLY_KEY_LIMIT} new live keys per calendar month (test keys are unlimited). You've generated ${genCheck.count} this month — try again next month or upgrade.`);
         e.code = 'monthly_key_generation_limit';
         throw e;
       }

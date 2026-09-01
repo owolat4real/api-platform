@@ -12,7 +12,7 @@ const { rpmLimiter }        = require('../middleware/rateLimit');
 const { callCareerCamp }    = require('../proxy/campProxy');
 const { getDB }             = require('../db/connection');
 const { MODEL_DISPLAY_NAMES, alertAdmin } = require('../keys/keyManager');
-const { checkFabrication, checkBrokenSentence } = require('../services/fabricationGuard');
+const { checkFabrication, checkBrokenSentence, checkHedgeContradiction, checkBareNameTag } = require('../services/fabricationGuard');
 
 router.use(authMiddleware);
 router.use(rpmLimiter);
@@ -107,6 +107,16 @@ function _qualityIssue(text, sourceTexts, guardOptions) {
   if (fabrication.flagged) return { kind: 'fabrication', detail: `entities: ${fabrication.suspiciousEntities.join(', ')}` };
   const broken = checkBrokenSentence(text);
   if (broken.flagged) return { kind: 'broken_sentence', detail: `fragment: "...${broken.snippet}..."` };
+  // Gap closed 2026-09-01 (platform-wide remediation Part 2 -- this
+  // service is "Developer Cloud", one of the platforms the brief named
+  // for the shared claim-verification package): checkFabrication above
+  // only covers unsourced entities/numbers. A claim can pass that check
+  // and still contradict itself (a hedge word alongside [VERIFIED]) or
+  // apply [VERIFIED] to a bare name with nothing checkable attached.
+  const hedge = checkHedgeContradiction(text);
+  if (hedge.flagged) return { kind: 'hedge_contradiction', detail: `fragment: "...${hedge.snippet}..."` };
+  const bareName = checkBareNameTag(text);
+  if (bareName.flagged) return { kind: 'bare_name_tag', detail: `fragment: "...${bareName.snippet}..."` };
   return null;
 }
 

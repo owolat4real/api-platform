@@ -7,7 +7,7 @@
  * middleware/errorContract.test.js and cql/cql.test.js.
  */
 const assert = require('assert');
-const { checkFabrication, checkBrokenSentence } = require('./fabricationGuard');
+const { checkFabrication, checkBrokenSentence, checkHedgeContradiction, checkBareNameTag } = require('./fabricationGuard');
 
 let passed = 0, failed = 0;
 function test(name, fn) {
@@ -141,6 +141,74 @@ test('a mid-sentence lowercase preposition (not right after a period) is not fla
   const text = 'Built a system consisting of several independent services, each responsible for one domain.';
   const result = checkBrokenSentence(text);
   assert.strictEqual(result.flagged, false);
+});
+
+console.log('checkHedgeContradiction');
+
+test('a hedge word immediately before [VERIFIED] in the same claim is flagged', () => {
+  const text = 'Delivered an est. 2 million daily transactions [VERIFIED].';
+  const result = checkHedgeContradiction(text);
+  assert.strictEqual(result.flagged, true);
+});
+
+test('other hedge words are all caught: approximately, likely, around, ~', () => {
+  assert.strictEqual(checkHedgeContradiction('Achieved approximately $2M in savings [VERIFIED].').flagged, true);
+  assert.strictEqual(checkHedgeContradiction('This was likely the primary driver [VERIFIED].').flagged, true);
+  assert.strictEqual(checkHedgeContradiction('Cut costs by around 30% [VERIFIED].').flagged, true);
+  assert.strictEqual(checkHedgeContradiction('Saved ~$500k [VERIFIED].').flagged, true);
+});
+
+test('a hedge word in an EARLIER, unrelated sentence does not falsely flag a later clean [VERIFIED] claim', () => {
+  const text = 'This is roughly the shape of the role. Reduced latency by 22% [VERIFIED], matching the CV exactly.';
+  const result = checkHedgeContradiction(text);
+  assert.strictEqual(result.flagged, false);
+});
+
+test('[VERIFIED] with no hedge word anywhere nearby is not flagged', () => {
+  const result = checkHedgeContradiction('Reduced latency by 22% [VERIFIED].');
+  assert.strictEqual(result.flagged, false);
+});
+
+test('text with no [VERIFIED] tag at all is never flagged, even with hedge words present', () => {
+  const result = checkHedgeContradiction('This is approximately correct, roughly speaking.');
+  assert.strictEqual(result.flagged, false);
+});
+
+test('empty/null text never throws', () => {
+  assert.strictEqual(checkHedgeContradiction('').flagged, false);
+  assert.strictEqual(checkHedgeContradiction(null).flagged, false);
+});
+
+console.log('checkBareNameTag');
+
+test('a bare platform name with [VERIFIED] and nothing else is flagged', () => {
+  const result = checkBareNameTag('LinkedIn [VERIFIED].');
+  assert.strictEqual(result.flagged, true);
+});
+
+test('multiple bare-name tags in one text are each detected', () => {
+  const text = 'LinkedIn [VERIFIED]. Indeed [VERIFIED]. Glassdoor [VERIFIED].';
+  assert.strictEqual(checkBareNameTag(text).flagged, true);
+});
+
+test('a name WITH a real accompanying claim is not flagged as bare', () => {
+  const result = checkBareNameTag('LinkedIn reports 900 million users [VERIFIED].');
+  assert.strictEqual(result.flagged, false);
+});
+
+test('a genuinely sourced, substantive [VERIFIED] claim is never flagged', () => {
+  const result = checkBareNameTag('Reduced latency by 22% while at Tech Solutions Ltd [VERIFIED].');
+  assert.strictEqual(result.flagged, false);
+});
+
+test('text with no [VERIFIED] tag at all is never flagged', () => {
+  const result = checkBareNameTag('LinkedIn is a professional networking platform.');
+  assert.strictEqual(result.flagged, false);
+});
+
+test('empty/null text never throws', () => {
+  assert.strictEqual(checkBareNameTag('').flagged, false);
+  assert.strictEqual(checkBareNameTag(null).flagged, false);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
