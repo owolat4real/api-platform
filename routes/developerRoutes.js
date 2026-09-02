@@ -118,7 +118,15 @@ async function _requireOwnKey(req, res) {
 }
 
 /* ── LIST KEYS ────────────────────────────────────────────── */
+// Real security fix (2026-09-02): this route had NO auth at all, unlike
+// every other :developerId-scoped route below it (rotate/delete both
+// call _requireOwnKey) -- anyone who saw or guessed a developerId could
+// list every one of that developer's key prefixes/usage stats. Found
+// while building cs_fixed's admin dev-platform control center (which
+// reads this data directly from the DB, not through this HTTP route, so
+// this fix doesn't affect that separate, already-admin-gated path).
 router.get('/keys/:developerId', async (req, res) => {
+  if (!await _requireOwnKey(req, res)) return;
   const mask = k => ({ ...k, prefix: k.prefix + '_v1_...hidden' });
   const keys = await KeyManager.listByDeveloper(req.params.developerId);
   // Live-caught (2026-08-28): revoked keys were already correctly hidden

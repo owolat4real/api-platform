@@ -250,9 +250,23 @@ class KeyManager {
       record.todayRequests = 0;
     }
 
-    if (record.dailyLimit !== Number.MAX_SAFE_INTEGER && record.todayRequests >= record.dailyLimit) {
-      return { valid: false, reason: 'daily_limit_exceeded', limit: record.dailyLimit, resetAt: 'midnight UTC' };
+    // Real admin-settable override (2026-09-02) -- lets an admin grant a
+    // custom daily limit / rpm to one specific key, independent of tier.
+    // Written directly by cs_fixed's admin route (routes/admin/
+    // devPlatformKeys.js, direct cross-DB write via mongoose useDb() --
+    // see that file's header for why a direct write was chosen over a
+    // new internal HTTP endpoint here). An expired override reads as
+    // absent, no cron dependency.
+    const override = record.adminOverride && (!record.adminOverride.expiresAt || new Date(record.adminOverride.expiresAt).getTime() >= Date.now())
+      ? record.adminOverride : null;
+    const effectiveDailyLimit = override?.dailyLimit ?? record.dailyLimit;
+    if (effectiveDailyLimit !== Number.MAX_SAFE_INTEGER && record.todayRequests >= effectiveDailyLimit) {
+      return { valid: false, reason: 'daily_limit_exceeded', limit: effectiveDailyLimit, resetAt: 'midnight UTC' };
     }
+    // Surfaced on the returned record so downstream consumers (e.g.
+    // middleware/rateLimit.js's rpm check) see the effective value without
+    // re-deriving the override themselves.
+    if (override?.rpm != null) record.rpm = override.rpm;
 
     // Free-tier cumulative monthly token budget -- a separate control from
     // the daily request-count limit above (a free key can stay under its
