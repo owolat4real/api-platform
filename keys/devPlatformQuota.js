@@ -5,8 +5,14 @@
  * against the raw mongodb driver since this is a separate repo/deploy/DB —
  * can't require() across repos). Same two independent controls:
  *   1. Monthly key-GENERATION cap — real countDocuments off api_keys'
- *      own createdAt. KeyManager.rotate() tags the new doc's
- *      metadata.rotatedFrom so a rotation never counts against this.
+ *      own createdAt. Real gap closed (2026-09-03): this used to exclude
+ *      any doc with metadata.rotatedFrom set, and KeyManager.rotate()
+ *      separately skipped this check entirely (_skipGenerationCap) --
+ *      together, rotation was completely unlimited, the same class of
+ *      bug fixed the same day across all 4 of cs_fixed's in-repo
+ *      developer platforms. A rotated key is now counted exactly like
+ *      any other real key -- it has its own real createdAt, same as a
+ *      fresh one.
  *   2. Monthly TOKEN budget — a real, disclosed starting number, tracked
  *      in the dev_platform_token_usage collection, one yearMonth document
  *      per developer per calendar month (see db/connection.js's index).
@@ -14,7 +20,10 @@
 const { getDB } = require('../db/connection');
 const nodemailer = require('nodemailer');
 
-const FREE_TIER_MONTHLY_KEY_LIMIT = 3;
+// Raised 3 -> 5 (2026-09-03, explicit decision) -- matches the same
+// change made the same day to cs_fixed/services/devPlatformQuota.js's
+// identical constant, keeping the two repos' free-tier limits in sync.
+const FREE_TIER_MONTHLY_KEY_LIMIT = 5;
 const FREE_TIER_MONTHLY_TOKEN_LIMIT = 100000;
 
 function _startOfUTCMonth() {
@@ -40,7 +49,6 @@ async function assertMonthlyKeyGenerationAllowed({ developerId, isFreeTier, extr
   const count = await db.collection('api_keys').countDocuments({
     developerId,
     createdAt: { $gte: _startOfUTCMonth() },
-    'metadata.rotatedFrom': { $exists: false },
     ...extraFilter,
   });
   return { allowed: count < FREE_TIER_MONTHLY_KEY_LIMIT, count, limit: FREE_TIER_MONTHLY_KEY_LIMIT };

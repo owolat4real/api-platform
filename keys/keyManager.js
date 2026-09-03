@@ -170,11 +170,16 @@ class KeyManager {
   }
 
   /* ── CREATE ───────────────────────────────────────────────── */
-  // _skipGenerationCap is set by rotate() below -- a rotation mints a new
-  // credential for an existing key, not a genuinely new key, and must
-  // never eat into the free-tier monthly generation cap the way a real
-  // additional-key creation would.
-  static async create({ developerId, tier, environment = 'live', name = 'Default Key', metadata = {}, _skipGenerationCap = false }) {
+  // Real gap closed (2026-09-03): _skipGenerationCap used to let
+  // rotate() below mint an entirely new live credential with zero rate
+  // limit -- a free-tier developer could rotate the same key unlimited
+  // times per month, completely bypassing the monthly generation cap
+  // this function otherwise enforces (the exact same class of bug fixed
+  // the same day across all 4 of cs_fixed's in-repo developer
+  // platforms -- CAMP, CSTM-2, CSVM, Transformer -- confirmed via direct
+  // code read to be the identical gap here, in this separate repo).
+  // Rotation now goes through the exact same real check as a fresh key.
+  static async create({ developerId, tier, environment = 'live', name = 'Default Key', metadata = {} }) {
     const db         = getDB();
     const tierConfig = API_TIERS[tier];
     if (!tierConfig) throw new Error(`Unknown tier: ${tier}`);
@@ -183,7 +188,7 @@ class KeyManager {
     // (2026-09-01) -- only 'live' key creation counts toward the real
     // limit, same fix as cs_fixed's 3 other in-repo platforms that have
     // an environment concept (CAMP, Transformer, CSVM).
-    if (!_skipGenerationCap && environment !== 'test') {
+    if (environment !== 'test') {
       const genCheck = await devPlatformQuota.assertMonthlyKeyGenerationAllowed({ developerId, isFreeTier: tier === 'FREE', extraFilter: { environment: 'live' } });
       if (!genCheck.allowed) {
         const e = new Error(`Free tier is limited to ${devPlatformQuota.FREE_TIER_MONTHLY_KEY_LIMIT} new live keys per calendar month (test keys are unlimited). You've generated ${genCheck.count} this month — try again next month or upgrade.`);
@@ -318,12 +323,13 @@ class KeyManager {
     const old = await db.collection('api_keys').findOne({ keyHash: oldKeyHash, developerId });
     if (!old) throw new Error('Key not found or not owned by this developer');
 
+    // Real fix (2026-09-03): no longer skips the generation cap -- see
+    // create()'s own header comment above for the real bug this closes.
     const newKey = await this.create({
       developerId,
       tier:     old.tier,
       name:     old.name + ' (rotated)',
       metadata: { ...(old.metadata || {}), rotatedFrom: oldKeyHash },
-      _skipGenerationCap: true,
     });
 
     await db.collection('api_keys').updateOne(

@@ -47,20 +47,38 @@ test('assertMonthlyKeyGenerationAllowed — allows under the free-tier limit', a
   assert.equal(result.limit, FREE_TIER_MONTHLY_KEY_LIMIT);
 });
 
-test('assertMonthlyKeyGenerationAllowed — blocks once the free-tier limit is reached, excludes rotated-in keys', async (t) => {
+test('assertMonthlyKeyGenerationAllowed — blocks once the free-tier limit is reached', async (t) => {
+  const originalGetDB = dbConnection.getDB;
+  dbConnection.getDB = () => fakeDb({
+    api_keys: { countDocuments: async () => 5 },
+  });
+  t.after(() => { dbConnection.getDB = originalGetDB; });
+
+  const { assertMonthlyKeyGenerationAllowed, FREE_TIER_MONTHLY_KEY_LIMIT } = loadFresh();
+  const result = await assertMonthlyKeyGenerationAllowed({ developerId: 'dev_1', isFreeTier: true });
+  assert.equal(FREE_TIER_MONTHLY_KEY_LIMIT, 5);
+  assert.equal(result.allowed, false);
+});
+
+/* CRITICAL REGRESSION (2026-09-03): this used to exclude any key doc
+   with metadata.rotatedFrom set, AND KeyManager.rotate() separately
+   skipped this whole check (_skipGenerationCap) -- together, rotation
+   was completely unlimited, a real bypass of this cap (the same class
+   of bug fixed the same day across all 4 of cs_fixed's in-repo
+   developer platforms). Locks in that a rotated key is now counted
+   exactly like any other real key. */
+test('assertMonthlyKeyGenerationAllowed — rotated keys now count toward the cap, never excluded', async (t) => {
   let capturedFilter = null;
   const originalGetDB = dbConnection.getDB;
   dbConnection.getDB = () => fakeDb({
-    api_keys: {
-      countDocuments: async (filter) => { capturedFilter = filter; return 3; },
-    },
+    api_keys: { countDocuments: async (filter) => { capturedFilter = filter; return 5; } },
   });
   t.after(() => { dbConnection.getDB = originalGetDB; });
 
   const { assertMonthlyKeyGenerationAllowed } = loadFresh();
   const result = await assertMonthlyKeyGenerationAllowed({ developerId: 'dev_1', isFreeTier: true });
-  assert.equal(result.allowed, false);
-  assert.deepEqual(capturedFilter['metadata.rotatedFrom'], { $exists: false });
+  assert.equal(result.allowed, false); // 5 real keys (rotations included) hits the real cap
+  assert.equal(capturedFilter['metadata.rotatedFrom'], undefined); // no longer excluded from the query
 });
 
 test('assertMonthlyKeyGenerationAllowed — extraFilter merges into the real query (environment:"live" exemption)', async (t) => {
