@@ -4,6 +4,7 @@
  * at localhost:3002. External developers never see the internal URL or model names.
  */
 const axios = require('axios');
+const { logGenericityIfFlagged } = require('../services/genericityFirewall');
 
 const CAMP_URL = process.env.CAREERCAMP_URL || 'http://localhost:3002';
 const CAMP_KEY = process.env.CAREERCAMP_INTERNAL_KEY || process.env.CS_TRANSFORMER_API_KEY || '';
@@ -93,6 +94,16 @@ async function callCareerCamp({ feature_id, user_input, user_id, messages = [], 
     // from the real user_input this function was actually sent.
     const promptTokenEstimate = Math.ceil((user_input || '').length / 4);
     const completionTokenEstimate = Math.ceil((data.content.length || 0) / 4);
+    // Real gap closed (2026-09-04): services/fabricationGuard.js was only
+    // wired into 2 of this platform's 9 real endpoints, and even there it
+    // checks source-document traceability, not generic-filler-phrase/
+    // self-contradiction/placeholder-leak detection. This is the single
+    // real choke point every one of the 9 endpoints calls through, so
+    // hooking it here gives real coverage across all of them at once.
+    // Observational only (logs, never blocks/retries) -- see
+    // services/genericityFirewall.js's own header for why this is
+    // deliberately lighter-touch than fabricationGuard's retry-then-503.
+    logGenericityIfFlagged(content, `camp:${feature_id}`);
     return {
       content,
       model:        data.model    || 'cs-sonnet',
