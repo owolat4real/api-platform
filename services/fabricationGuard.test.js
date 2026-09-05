@@ -7,7 +7,7 @@
  * middleware/errorContract.test.js and cql/cql.test.js.
  */
 const assert = require('assert');
-const { checkFabrication, checkBrokenSentence, checkHedgeContradiction, checkBareNameTag } = require('./fabricationGuard');
+const { checkFabrication, checkBrokenSentence, checkHedgeContradiction, checkBareNameTag, checkPlaceholderLeak } = require('./fabricationGuard');
 
 let passed = 0, failed = 0;
 function test(name, fn) {
@@ -114,6 +114,45 @@ test('ALL-CAPS section headers (real resume_auto_optimiser output shape) are not
   const generated = 'PROFESSIONAL SUMMARY\nExperienced engineer.\n\nTECHNICAL SKILLS\nPython, REST APIs.\n\nEXPERIENCE\nBuilt REST APIs at Tech Solutions Ltd.';
   const result = checkFabrication(generated, [cv]);
   assert.strictEqual(result.flagged, false);
+});
+
+test('the real live-caught false positive: "Key Achievements" section header and "Available upon request" boilerplate are not mistaken for fabricated entities', () => {
+  const cv = 'Jane Smith\nSoftware Engineer with 5 years experience in Python and JavaScript.\nWorked at TechCorp from 2019-2024 building backend APIs.';
+  const generated = 'Key Achievements:\n- Improved API performance.\n\nReferences: Available upon request.';
+  const result = checkFabrication(generated, [cv], { checkNumbers: false });
+  assert.strictEqual(result.flagged, false);
+});
+
+test('real fabrication is still caught alongside the same boilerplate headers (the denylist additions above do not mask genuine invention)', () => {
+  const cv = 'Jane Smith\nSoftware Engineer with 5 years experience in Python and JavaScript.\nWorked at TechCorp from 2019-2024 building backend APIs.\nSkills: Python, Node.js, AWS, Docker.';
+  const generated = 'Implemented real-time data processing using Apache Kafka and Spark.\n\nKey Achievements:\n- Stuff.\n\nReferences: Available upon request.';
+  const result = checkFabrication(generated, [cv], { checkNumbers: false });
+  assert.strictEqual(result.flagged, true);
+  assert.ok(result.suspiciousEntities.includes('Apache Kafka'));
+});
+
+console.log('checkPlaceholderLeak');
+
+test('the real live-caught bug: the model echoes the JSON schema\'s own bracket placeholder verbatim instead of real content', () => {
+  const result = checkPlaceholderLeak('<full rewritten CV>');
+  assert.strictEqual(result.flagged, true);
+});
+
+test('other common template-placeholder shapes are all caught', () => {
+  assert.strictEqual(checkPlaceholderLeak('Summary: [INSERT SUMMARY HERE]').flagged, true);
+  assert.strictEqual(checkPlaceholderLeak('Name: [YOUR NAME]').flagged, true);
+  assert.strictEqual(checkPlaceholderLeak('<int>').flagged, true);
+  assert.strictEqual(checkPlaceholderLeak('<str>').flagged, true);
+});
+
+test('real, normal generated content is never flagged', () => {
+  const result = checkPlaceholderLeak('Jane Smith\nSoftware Engineer with 5 years experience.\nWorked at TechCorp building backend APIs.');
+  assert.strictEqual(result.flagged, false);
+});
+
+test('empty/null text never throws', () => {
+  assert.strictEqual(checkPlaceholderLeak('').flagged, false);
+  assert.strictEqual(checkPlaceholderLeak(null).flagged, false);
 });
 
 console.log('checkBrokenSentence');

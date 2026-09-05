@@ -29,6 +29,15 @@ const SECTION_LABELS = new Set([
   'Professional Summary', 'Technical Skills', 'Professional Experience',
   'Work Experience', 'Projects', 'Education', 'Certifications',
   'Publications', 'Experience', 'Summary', 'Skills',
+  // Real false-positive found live (2026-09-05): resume_auto_optimiser's
+  // real output on an otherwise clean, non-fabricated rewrite included
+  // "Key Achievements" as a section header -- an extremely common,
+  // generic CV heading, not a fabricated entity -- which wasn't in this
+  // Set and so got flagged as a suspicious unsourced multi-word phrase.
+  'Key Achievements', 'Achievements', 'Notable Achievements',
+  'Professional Achievements', 'Core Competencies', 'Awards', 'References',
+  'Languages', 'Interests', 'Hobbies', 'Volunteering', 'Volunteer Experience',
+  'Additional Information', 'Career Objective', 'Objective', 'Profile',
 ].map(s => s.toLowerCase()));
 // Real bug found live (2026-08-30): resume_auto_optimiser's real output
 // writes section headers in ALL CAPS ("PROFESSIONAL SUMMARY"), which
@@ -59,6 +68,13 @@ const COMMON_SENTENCE_WORDS = new Set([
   'Understanding', 'Never', 'Always', 'Both', 'Either', 'Neither', 'Since', 'While',
   'When', 'Where', 'What', 'Why', 'How', 'Here', 'There', 'Thank', 'Thanks',
   'Please', 'Dear', 'Sincerely', 'Regards', 'Best',
+  // Real false-positive found live (2026-09-05): "References: Available
+  // upon request." is standard CV boilerplate -- "Available" sits right
+  // after a colon+space, which the strict mid-clause regex treats as
+  // "not sentence-initial" (by design, so it can catch a real fabricated
+  // name in that position), but this specific word is common boilerplate,
+  // not an invented entity.
+  'Available', 'Present', 'Ongoing', 'Confidential', 'Upon',
   'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
   'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August',
   'September', 'October', 'November', 'December',
@@ -322,4 +338,32 @@ function checkBareNameTag(text) {
   return { flagged: false, snippet: null };
 }
 
-module.exports = { checkFabrication, checkBrokenSentence, checkHedgeContradiction, checkBareNameTag, extractNumericClaims, extractProperNouns };
+// Real, live-caught bug (2026-09-05) found while testing /cv/optimise:
+// the model returned the literal JSON schema TEMPLATE text
+// ("<full rewritten CV>") as the actual VALUE for optimised_cv, instead
+// of real rewritten content. This passed checkFabrication cleanly (a
+// bracket placeholder has no proper nouns/numbers to flag as unsourced),
+// so it would have shipped as a "successful" 200 response containing
+// literally no real content at all -- arguably a more severe defect
+// than a fabricated claim, since a fabricated claim is at least real
+// (if wrong) text, while this is the schema itself leaking through.
+// This exact defect class was already detected by this platform's
+// genericityFirewall (UNRESOLVED_PLACEHOLDER flag), but that check is
+// deliberately observational-only (logs, never blocks/retries) -- see
+// campProxy.js's own comment on why. This is the real, blocking version
+// for the specific fields withFabricationGuard's callers check.
+const PLACEHOLDER_PATTERNS = [
+  /<full rewritten cv>/i, /<full[^>]*>/i, /<optimised_cv>/i,
+  /\[INSERT[^\]]*\]/i, /\[YOUR[^\]]*\]/i, /\[PLACEHOLDER[^\]]*\]/i,
+  /<str>/i, /<int>/i, /<[a-z_]+_here>/i,
+];
+function checkPlaceholderLeak(text) {
+  const t = text || '';
+  for (const re of PLACEHOLDER_PATTERNS) {
+    const m = t.match(re);
+    if (m) return { flagged: true, snippet: t.slice(Math.max(0, m.index - 30), m.index + 40) };
+  }
+  return { flagged: false, snippet: null };
+}
+
+module.exports = { checkFabrication, checkBrokenSentence, checkHedgeContradiction, checkBareNameTag, checkPlaceholderLeak, extractNumericClaims, extractProperNouns };

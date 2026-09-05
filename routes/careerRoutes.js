@@ -12,7 +12,7 @@ const { rpmLimiter }        = require('../middleware/rateLimit');
 const { callCareerCamp }    = require('../proxy/campProxy');
 const { getDB }             = require('../db/connection');
 const { MODEL_DISPLAY_NAMES, alertAdmin } = require('../keys/keyManager');
-const { checkFabrication, checkBrokenSentence, checkHedgeContradiction, checkBareNameTag } = require('../services/fabricationGuard');
+const { checkFabrication, checkBrokenSentence, checkHedgeContradiction, checkBareNameTag, checkPlaceholderLeak } = require('../services/fabricationGuard');
 
 router.use(authMiddleware);
 router.use(rpmLimiter);
@@ -117,6 +117,14 @@ function _qualityIssue(text, sourceTexts, guardOptions) {
   if (hedge.flagged) return { kind: 'hedge_contradiction', detail: `fragment: "...${hedge.snippet}..."` };
   const bareName = checkBareNameTag(text);
   if (bareName.flagged) return { kind: 'bare_name_tag', detail: `fragment: "...${bareName.snippet}..."` };
+  // Gap closed 2026-09-05: none of the above checks catch the model
+  // literally echoing back the JSON schema's own placeholder text
+  // (e.g. "<full rewritten CV>") as the field value -- no proper nouns
+  // or numbers to flag as unsourced, so checkFabrication passes it
+  // clean, yet the response is completely useless content. See
+  // fabricationGuard.js's own comment on this exact bug.
+  const placeholder = checkPlaceholderLeak(text);
+  if (placeholder.flagged) return { kind: 'placeholder_leak', detail: `fragment: "...${placeholder.snippet}..."` };
   return null;
 }
 
@@ -160,8 +168,10 @@ Return valid JSON only:
   "grade": <"A+"|"A"|"B+"|"B"|"C+"|"C"|"D"|"F">,
   "keyword_match": { "matched": [...], "missing": [...], "coverage": <integer> },
   "section_scores": { "summary": <int>, "experience": <int>, "skills": <int>, "education": <int> }${opts.include_suggestions !== false ? ',\n  "top_suggestions": [<5 specific improvements>]' : ''}${opts.include_keywords !== false ? ',\n  "power_keywords": [<8 ATS keywords to add>]' : ''},
-  "verdict": "<one authoritative sentence>"
+  "verdict": string
 }
+verdict must be one real, specific sentence assessing THIS CV — never a
+generic placeholder or template text.
 Calibration: 70-79=good, 80-89=very good, 90+=exceptional. Be precise.`;
 }
 
@@ -172,18 +182,33 @@ Rewrite level: ${level} (light=minor edits, moderate=significant improvement, fu
 Preserve voice: ${opts.preserve_voice !== false}
 Add metrics where missing: ${opts.add_metrics !== false}
 
+CRITICAL — never invent facts not present in the ORIGINAL CV below:
+- Do NOT add any skill, tool, framework, or technology the candidate did
+  not already list (e.g. if they wrote "Python", do not add "Django" or
+  "Flask" unless those exact words already appear in the CV).
+- Do NOT invent an education section, degree, institution, or graduation
+  year if none exists in the original — if education is genuinely
+  missing, omit that section entirely rather than fabricate one.
+- Do NOT invent employer names, job titles, or dates not in the original.
+- "Add metrics where missing" means quantifying achievements the
+  candidate ALREADY describes (e.g. "improved performance" -> "improved
+  performance by an estimated 20-30%, typical for this kind of change")
+  -- it does NOT mean inventing new responsibilities, systems, or results
+  the candidate never mentioned. When in doubt, rephrase and clarify
+  existing content rather than add anything new.
+
 ORIGINAL CV:
 ${cvText.slice(0, 4000)}
 
 ${jd ? `JOB DESCRIPTION:\n${jd.slice(0, 2000)}\n` : ''}
-Return valid JSON:
-{
-  "optimised_cv": "<full rewritten CV>",
-  "changes": { "summary": "<what changed>", "key_improvements": [...], "sections_rewritten": [...] },
-  "before_score": <int>,
-  "after_score": <int>,
-  "word_count": <int>
-}`;
+Return valid JSON with these exact keys (fill each with real generated
+content, never with placeholder or template text):
+- optimised_cv: a string containing the complete rewritten CV text
+- changes: an object with a summary string, a key_improvements array of
+  strings, and a sections_rewritten array of strings
+- before_score: an integer
+- after_score: an integer
+- word_count: an integer`;
 }
 
 function pSalary(role, country, city, yrs, skills, size, opts = {}) {
@@ -202,13 +227,17 @@ Return valid JSON:
   "salary_range": { "low": <int>, "median": <int>, "high": <int>, "top_10_percent": <int> },
   "usd_equivalent": { "low": <int>, "median": <int>, "high": <int> },
   "ppp_adjusted": true,
-  "skill_premiums": [{ "skill": <str>, "premium_percent": <int> }],
+  "skill_premiums": [{ "skill": string, "premium_percent": <int> }],
   "negotiation_target": <int>,
-  "negotiation_script": "<2-sentence opening>",
+  "negotiation_script": string,
   "confidence": <"high"|"medium"|"low">,
   "data_source": "CareerStudioMax Market Intelligence",
-  "yoy_growth_percent": <float>${opts.include_equity ? ',\n  "equity_range": { "low": "<str>", "high": "<str>" }' : ''}${opts.include_benefits ? ',\n  "common_benefits": [...]' : ''}
-}`;
+  "yoy_growth_percent": <float>${opts.include_equity ? ',\n  "equity_range": { "low": string, "high": string }' : ''}${opts.include_benefits ? ',\n  "common_benefits": [...]' : ''}
+}
+Every field marked "string" above must be real generated text specific to
+this request (e.g. negotiation_script is a real 2-sentence opening line,
+skill_premiums[].skill and equity_range low/high are real values) — never
+placeholder or template text.`;
 }
 
 const COVER_MODES = {
@@ -263,12 +292,15 @@ Return valid JSON:
   "overall_score": <int 0-100>,
   "grade": <"A+"|"A"|"B+"|"B"|"C+"|"C"|"D"|"F">,
   "dimensions": { "skills": <int>, "experience": <int>, "salary": <int>, "location": <int>, "culture_signals": <int> },
-  "recommendation": "<one actionable sentence>",
-  "gaps": [{ "skill": <str>, "severity": <"critical"|"moderate"|"minor">, "learn_hours": <int> }],
+  "recommendation": string,
+  "gaps": [{ "skill": string, "severity": <"critical"|"moderate"|"minor">, "learn_hours": <int> }],
   "strengths": [<3-5 specific strengths>],
   "interview_probability": <float 0-1>,
   "apply_recommendation": <"apply_now"|"apply_with_caveats"|"skill_up_first"|"pass">
-}`;
+}
+recommendation must be one real, specific actionable sentence for THIS
+candidate/job pair, and gaps[].skill must be a real skill name — never
+placeholder or template text.`;
 }
 
 function pInterview(role, company, type, cvText, count, answers, seniority) {
@@ -277,11 +309,13 @@ Seniority: ${seniority}
 ${cvText ? 'Candidate CV:\n' + cvText.slice(0, 1500) + '\n' : ''}
 Return a valid JSON array. Each item:
 {
-  "question": <str>,
+  "question": string,
   "type": <"behavioural"|"technical"|"case"|"situational">,
-  "why_asked": <str — what is really being tested>,
-  "difficulty": <"easy"|"medium"|"hard">${answers ? ',\n  "model_answer": <STAR format, 150-200 words>,\n  "common_mistakes": [...]' : ''}
+  "why_asked": string,
+  "difficulty": <"easy"|"medium"|"hard">${answers ? ',\n  "model_answer": string,\n  "common_mistakes": [...]' : ''}
 }
+question must be a real, specific interview question (never placeholder
+text); why_asked is a real explanation of what it tests${answers ? '; model_answer is a real STAR-format answer (150-200 words) built ONLY from what the candidate CV above actually states — never invent an employer, project, or metric the CV does not contain' : ''}.
 Make questions specific to ${company || 'top companies in this space'}. No generic filler.`;
 }
 
@@ -305,22 +339,28 @@ Return valid JSON:
   "market": "${country}",
   "readiness_score": <int 0-100>,
   "gaps": [{
-    "skill": <str>,
+    "skill": string,
     "priority": <int 1-N>,
     "severity": <"critical"|"moderate"|"minor">,
     "current_level": <"none"|"basic"|"intermediate">,
     "required_level": <"L1"|"L2"|"L3"|"L4">,
     "learn_hours": <int>,
     "learn_weeks": <int>,
-    "salary_impact": "<+£x,xxx/year [ESTIMATED]>",
+    "salary_impact": string,
     "demand_score": <int 0-100>,
     "free_resources": [...],
     "certification": <str|null>
   }],
-  "estimated_time_to_ready": "<N months>",
-  "total_salary_unlock": "<+£xx,xxx/year [ESTIMATED]>"${opts.include_roi ? ',\n  "roi_analysis": { "investment_hours": <int>, "salary_gain_year1": "<str [ESTIMATED]>", "payback_months": <int> }' : ''}
+  "estimated_time_to_ready": string,
+  "total_salary_unlock": string${opts.include_roi ? ',\n  "roi_analysis": { "investment_hours": <int>, "salary_gain_year1": string, "payback_months": <int> }' : ''}
 }
-Tag total_salary_unlock (and salary_gain_year1, if present) [ESTIMATED] too -- it's a sum of the same estimated per-gap figures above, not a more certain number than any of them.`;
+Every field marked "string" above must be real generated text, never
+placeholder or template text. salary_impact must read like
+"+£x,xxx/year [ESTIMATED]" with a REAL number filled in for x,xxx (not
+the literal letters). estimated_time_to_ready must read like "N months"
+with a real number for N. Tag total_salary_unlock (and salary_gain_year1,
+if present) [ESTIMATED] too -- it's a sum of the same estimated per-gap
+figures above, not a more certain number than any of them.`;
 }
 
 /* ══════════════════════════════════════════════════════════
