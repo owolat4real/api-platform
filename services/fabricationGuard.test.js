@@ -123,6 +123,21 @@ test('the real live-caught false positive: "Key Achievements" section header and
   assert.strictEqual(result.flagged, false);
 });
 
+test('the same false-positive class recurring live (2026-09-05) with a different missed header ("Key Skills") and real employers/companies from the CV correctly recognized as sourced', () => {
+  const cv = 'Jane Doe\n\nExperience\nSenior Operations Manager, ABC Ltd, 2020-2023\n- Led operations team, reduced costs by 15%\nOperations Manager, DEF Company, 2017-2020\n- Managed daily operations\n\nEducation\nBusiness Administration, XYZ University\n\nSkills\nProject Management, Team Leadership';
+  const generated = 'Key Skills\nProject Management, Team Leadership\n\nProfessional Experience\nSenior Operations Manager, ABC Ltd, 2020-2023\n- Led a cross-functional operations team\nOperations Manager, DEF Company, 2017-2020\n- Oversaw daily operational activities\n\nEducation\nBusiness Administration, XYZ University';
+  const result = checkFabrication(generated, [cv], { checkNumbers: false });
+  assert.strictEqual(result.flagged, false);
+});
+
+test('a genuinely new, invented employer is still caught even alongside real, correctly-sourced company names from the same CV', () => {
+  const cv = 'Jane Doe\n\nExperience\nSenior Operations Manager, ABC Ltd, 2020-2023\n- Led operations team\n\nSkills\nProject Management';
+  const generated = 'Key Skills\nProject Management\n\nExperience\nSenior Operations Manager, ABC Ltd, 2020-2023\n- Led operations team\nOperations Manager, DEF Company, 2017-2020\n- Fabricated new job never mentioned';
+  const result = checkFabrication(generated, [cv], { checkNumbers: false });
+  assert.strictEqual(result.flagged, true);
+  assert.ok(result.suspiciousEntities.includes('DEF Company'));
+});
+
 test('real fabrication is still caught alongside the same boilerplate headers (the denylist additions above do not mask genuine invention)', () => {
   const cv = 'Jane Smith\nSoftware Engineer with 5 years experience in Python and JavaScript.\nWorked at TechCorp from 2019-2024 building backend APIs.\nSkills: Python, Node.js, AWS, Docker.';
   const generated = 'Implemented real-time data processing using Apache Kafka and Spark.\n\nKey Achievements:\n- Stuff.\n\nReferences: Available upon request.';

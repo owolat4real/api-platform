@@ -38,6 +38,20 @@ const SECTION_LABELS = new Set([
   'Professional Achievements', 'Core Competencies', 'Awards', 'References',
   'Languages', 'Interests', 'Hobbies', 'Volunteering', 'Volunteer Experience',
   'Additional Information', 'Career Objective', 'Objective', 'Profile',
+  // Same false-positive class found again live (2026-09-05) with a
+  // DIFFERENT section header this denylist hadn't caught yet: "Key
+  // Skills" -- a real developer's /cv/optimise call got flagged for
+  // fabrication where every one of the "suspicious" entities was either
+  // this same kind of common, generic section header (Key Skills,
+  // Employment History...) added while reorganizing an otherwise
+  // unchanged CV, not an invented fact. Adding headers one report at a
+  // time is exactly the same gap recurring -- filling out the realistic
+  // common set now rather than waiting for the next specific miss.
+  'Key Skills', 'Core Skills', 'Skills Summary', 'Areas of Expertise',
+  'Technical Proficiencies', 'Employment History', 'Career History',
+  'Qualifications', 'Summary of Qualifications', 'Personal Details',
+  'Contact Information', 'Contact Details', 'Personal Profile',
+  'Executive Summary', 'Key Qualifications', 'Relevant Experience',
 ].map(s => s.toLowerCase()));
 // Real bug found live (2026-08-30): resume_auto_optimiser's real output
 // writes section headers in ALL CAPS ("PROFESSIONAL SUMMARY"), which
