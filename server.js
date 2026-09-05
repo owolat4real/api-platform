@@ -33,6 +33,13 @@ app.use(morgan('combined', { skip: (req) => req.url === '/health' }));
 app.use(require('./middleware/requestId'));
 app.use(require('./middleware/errorContract')());
 
+// Pulled from public discovery 2026-09-05 (RunPod inference backend
+// offline pending cost) -- this service is pure JSON/API responses with
+// no real marketing HTML of its own (developer-portal/camp-developer-
+// portal/etc. carry their own noindex tags), but a blanket header costs
+// nothing and covers the raw openapi.yaml dump too.
+app.use((req, res, next) => { res.setHeader('X-Robots-Tag', 'noindex, nofollow'); next(); });
+
 // Global rate limiter — generous, per-key limits enforced inside routes
 app.use(rateLimit({
   windowMs:        60 * 1000,
