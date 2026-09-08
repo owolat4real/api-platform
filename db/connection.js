@@ -37,6 +37,21 @@ function getDB() {
   return _db;
 }
 
+// Real gap closed (2026-09-08): KeyManager.rotate() (keys/keyManager.js)
+// does two independent writes -- insert the new key, then mark the old
+// one revoked -- with nothing wrapping them. A crash/error between the
+// two could leave a developer with two active keys (old never revoked)
+// or, less likely, a moment with neither yet committed. Exposes the raw
+// client so rotate() can run both writes in one real transaction.
+// Requires a replica set to support multi-document transactions --
+// confirmed safe here: this cluster is MongoDB Atlas (see getAuditDB()'s
+// own comment on the shared-cluster setup), which is always a replica
+// set even on the free tier, never a standalone instance.
+function getClient() {
+  if (!_client) throw new Error('Database not connected — call connect() first');
+  return _client;
+}
+
 // Shared cluster, separate database: this service's own data lives in
 // MONGODB_DB (careerlm_api by default), but the main platform's admin
 // audit log (cs_fixed/models/AuditLog.js) lives in the "careerstudio" db
@@ -54,4 +69,4 @@ async function disconnect() {
   if (_client) { await _client.close(); _db = null; _client = null; }
 }
 
-module.exports = { connect, getDB, getAuditDB, disconnect };
+module.exports = { connect, getDB, getAuditDB, getClient, disconnect };

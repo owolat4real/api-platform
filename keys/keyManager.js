@@ -1,7 +1,7 @@
 'use strict';
 const crypto      = require('crypto');
 const nodemailer  = require('nodemailer');
-const { getDB }   = require('../db/connection');
+const { getDB, getClient } = require('../db/connection');
 const devPlatformQuota = require('./devPlatformQuota');
 
 // Live-caught (2026-08-24): EMAIL_FROM was set directly in this service's
@@ -179,7 +179,12 @@ class KeyManager {
   // platforms -- CAMP, CSTM-2, CSVM, Transformer -- confirmed via direct
   // code read to be the identical gap here, in this separate repo).
   // Rotation now goes through the exact same real check as a fresh key.
-  static async create({ developerId, tier, environment = 'live', name = 'Default Key', metadata = {} }) {
+  // `session` (2026-09-08): optional MongoDB session for a caller that
+  // needs this insert to participate in its own transaction (rotate()
+  // below is the only such caller today) -- undefined for every normal,
+  // standalone call, which behaves exactly as before (insertOne with no
+  // session is a normal, non-transactional write).
+  static async create({ developerId, tier, environment = 'live', name = 'Default Key', metadata = {} }, session) {
     const db         = getDB();
     const tierConfig = API_TIERS[tier];
     if (!tierConfig) throw new Error(`Unknown tier: ${tier}`);
@@ -225,8 +230,13 @@ class KeyManager {
       recentCalls:   [],
     };
 
-    await db.collection('api_keys').insertOne(keyRecord);
-    // Non-blocking — email failure never blocks key creation
+    await db.collection('api_keys').insertOne(keyRecord, session ? { session } : {});
+    // Non-blocking — email failure never blocks key creation. Deliberately
+    // fired even when called from within rotate()'s transaction below,
+    // and deliberately NOT awaited inside it -- an external side effect
+    // like this must never be tied to a DB transaction's commit/rollback
+    // (a slow/failed email send has no business blocking or retrying a
+    // real credential rotation).
     sendWelcomeEmail(developerId, key, tier).catch(() => {});
     return { key, record: keyRecord };
   }
@@ -318,24 +328,45 @@ class KeyManager {
   }
 
   /* ── ROTATE ───────────────────────────────────────────────── */
+  // Real gap closed (2026-09-08): the insert-new-key + revoke-old-key
+  // writes below used to be two independent, unwrapped operations -- a
+  // crash/error between them could leave a developer with two active
+  // keys (old never revoked) or, less likely, a moment with neither
+  // committed yet. Now wrapped in one real MongoDB transaction via
+  // withTransaction (auto-retries on a transient transaction error,
+  // aborts and rethrows on a real failure) -- both writes commit
+  // together or neither does. The one deliberate side effect this must
+  // NOT roll back with (the welcome email inside create()) is already
+  // fire-and-forget/non-blocking, so it's unaffected either way.
   static async rotate(oldKeyHash, developerId) {
-    const db  = getDB();
-    const old = await db.collection('api_keys').findOne({ keyHash: oldKeyHash, developerId });
+    const db     = getDB();
+    const client = getClient();
+    const old    = await db.collection('api_keys').findOne({ keyHash: oldKeyHash, developerId });
     if (!old) throw new Error('Key not found or not owned by this developer');
 
-    // Real fix (2026-09-03): no longer skips the generation cap -- see
-    // create()'s own header comment above for the real bug this closes.
-    const newKey = await this.create({
-      developerId,
-      tier:     old.tier,
-      name:     old.name + ' (rotated)',
-      metadata: { ...(old.metadata || {}), rotatedFrom: oldKeyHash },
-    });
+    const session = client.startSession();
+    let newKey;
+    try {
+      await session.withTransaction(async () => {
+        // Real fix (2026-09-03): no longer skips the generation cap --
+        // see create()'s own header comment above for the real bug this
+        // closes.
+        newKey = await this.create({
+          developerId,
+          tier:     old.tier,
+          name:     old.name + ' (rotated)',
+          metadata: { ...(old.metadata || {}), rotatedFrom: oldKeyHash },
+        }, session);
 
-    await db.collection('api_keys').updateOne(
-      { keyHash: oldKeyHash },
-      { $set: { status: 'revoked', revokedAt: new Date() } }
-    );
+        await db.collection('api_keys').updateOne(
+          { keyHash: oldKeyHash },
+          { $set: { status: 'revoked', revokedAt: new Date() } },
+          { session },
+        );
+      });
+    } finally {
+      await session.endSession();
+    }
 
     return newKey;
   }
