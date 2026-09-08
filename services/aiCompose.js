@@ -25,11 +25,22 @@ const axios = require('axios');
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 // llama-3.1-8b-instant / llama-3.3-70b-versatile were both fully
 // decommissioned by Groq (confirmed live, 404, matching cs_fixed's own
-// middleware/brain.js:587's identical finding from 2026-08-17) --
-// openai/gpt-oss-20b is Groq's current small/fast model, the same one
-// cs_fixed's own GROQ_FAST_MODEL pool already uses for short, simple
-// tasks like this one.
-const GROQ_MODEL = 'openai/gpt-oss-20b';
+// middleware/brain.js:587's identical finding from 2026-08-17).
+//
+// Real gap (2026-09-08): DEVCLOUD_GROQ_API_KEY currently reuses cs_fixed's
+// own Groq account/key (a genuinely separate account needs the account
+// owner's own sign-up -- not something obtainable on their behalf), so a
+// single hardcoded model shares that account's per-model daily quota with
+// every other caller. Confirmed live: openai/gpt-oss-20b hit its real
+// 1000 RPD cap from cs_fixed's own traffic alone. Groq's rate-limit error
+// itself confirms the cap is PER MODEL, not account-wide ("Rate limit
+// reached for model `X`... requests per day (RPD): Limit 1000, Used
+// 1000") -- so trying a different real, currently-live model on the same
+// key/account genuinely has separate headroom, not just a hopeful retry.
+// Falls through this list only on a 429; any other error (bad auth,
+// malformed request) fails fast to the caller's static fallback instead
+// of wasting 3 round trips on an error no model swap will fix.
+const GROQ_MODELS = ['openai/gpt-oss-20b', 'groq/compound-mini', 'openai/gpt-oss-120b'];
 
 async function composeOpeningLine({ task, facts, staticFallback }) {
   const key = process.env.DEVCLOUD_GROQ_API_KEY;
@@ -46,23 +57,42 @@ Rules:
 - Never invent a fact beyond what's given above.
 Return ONLY those 1-2 sentences, nothing else.`;
 
-  try {
-    const resp = await axios.post(GROQ_URL, {
-      model: GROQ_MODEL,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: 'Write that opening line now.' },
-      ],
-      max_tokens: 120,
-      temperature: 0.7,
-    }, {
-      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      timeout: 8000,
-    });
-    const text = (resp.data?.choices?.[0]?.message?.content || '').trim().replace(/^["']|["']$/g, '');
-    if (text.length > 12) return text;
-  } catch (e) {
-    console.warn('[aiCompose] Groq call failed, using static fallback:', e.message?.slice(0, 100));
+  for (const model of GROQ_MODELS) {
+    try {
+      const resp = await axios.post(GROQ_URL, {
+        model,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: 'Write that opening line now.' },
+        ],
+        // The openai/gpt-oss-* models in this list are reasoning models --
+        // they spend tokens on hidden reasoning before emitting any visible
+        // text, so a small max_tokens can silently starve the actual answer
+        // to empty (confirmed live: 120 produced a real 200 OK with content
+        // ""). 800 leaves comfortable headroom over that reasoning overhead
+        // for what's genuinely only a 1-2 sentence answer.
+        max_tokens: 800,
+        temperature: 0.7,
+      }, {
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+        timeout: 8000,
+      });
+      const text = (resp.data?.choices?.[0]?.message?.content || '').trim().replace(/^["']|["']$/g, '');
+      if (text.length > 12) return text;
+      // A real 200 OK with empty/too-short content -- confirmed live as a
+      // real reasoning-model quirk (gpt-oss-120b), not necessarily a
+      // model-wide problem, so worth trying the next model rather than
+      // giving up on the first empty response.
+      console.warn(`[aiCompose] ${model} returned empty/degenerate content, trying next model`);
+    } catch (e) {
+      const status = e.response?.status;
+      if (status === 429 && model !== GROQ_MODELS[GROQ_MODELS.length - 1]) {
+        console.warn(`[aiCompose] ${model} rate-limited, trying next model`);
+        continue;
+      }
+      console.warn('[aiCompose] Groq call failed, using static fallback:', e.message?.slice(0, 100));
+      break;
+    }
   }
   return staticFallback;
 }
