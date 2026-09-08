@@ -20,6 +20,8 @@
 const { getDB } = require('../db/connection');
 const nodemailer = require('nodemailer');
 
+function _escHtml(s) { return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
 // Raised 3 -> 5 (2026-09-03, explicit decision) -- matches the same
 // change made the same day to cs_fixed/services/devPlatformQuota.js's
 // identical constant, keeping the two repos' free-tier limits in sync.
@@ -92,18 +94,35 @@ async function _sendThresholdEmail(kind, { developerId, used, limit }) {
       auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
     });
     const from = _canonicalDomain(process.env.EMAIL_FROM, 'CareerStudioMax Developer Cloud <api@careerstudiomax.com>');
+    // Real, live-caught gap (2026-09-08): both of these were 100% static.
+    // Now the opening line is composed fresh per send by this service's
+    // own AI (services/aiCompose.js) -- the instructional/secondary line
+    // (upgrade prompt) stays exactly as it was, deterministic, never
+    // handed to the AI. Falls back to the exact original sentence if
+    // DEVCLOUD_GROQ_API_KEY isn't set or the call fails.
+    const { composeOpeningLine } = require('../services/aiCompose');
     if (kind === 'notified100') {
+      const opening = await composeOpeningLine({
+        task: 'Tell them their monthly token quota is fully used up and new requests are being rejected until it resets.',
+        facts: `Platform: CareerStudioMax Developer Cloud\nMonthly limit: ${limit.toLocaleString()} tokens`,
+        staticFallback: `Your CareerStudioMax Developer Cloud account has reached its free-tier limit of ${limit.toLocaleString()} tokens this month — new requests are being rejected until the quota resets next billing cycle.`,
+      });
       await transport.sendMail({
         from, to: dev.email,
         subject: 'Monthly quota reached — new requests are blocked until reset',
-        html: `<p>Your CareerStudioMax Developer Cloud account has reached its free-tier limit of ${limit.toLocaleString()} tokens this month — new requests are being rejected until the quota resets next billing cycle.</p><p style="color:#888;font-size:12px">Upgrade your plan from your dashboard to keep making requests now.</p>`,
+        html: `<p>${_escHtml(opening)}</p><p style="color:#888;font-size:12px">Upgrade your plan from your dashboard to keep making requests now.</p>`,
       });
     } else {
       const pct = Math.round((used / limit) * 100);
+      const opening = await composeOpeningLine({
+        task: 'Let them know they have used most of their monthly token quota, well before it actually runs out.',
+        facts: `Usage: ${used.toLocaleString()} of ${limit.toLocaleString()} tokens this month\nPlatform: CareerStudioMax Developer Cloud`,
+        staticFallback: `${used.toLocaleString()} of ${limit.toLocaleString()} tokens used this month on CareerStudioMax Developer Cloud.`,
+      });
       await transport.sendMail({
         from, to: dev.email,
         subject: `You've used ${pct}% of your monthly quota — CareerStudioMax Developer Cloud`,
-        html: `<p>${used.toLocaleString()} of ${limit.toLocaleString()} tokens used this month on CareerStudioMax Developer Cloud.</p><p style="color:#888;font-size:12px">This resets at the start of your next billing cycle. Upgrade your plan from your dashboard for more headroom now.</p>`,
+        html: `<p>${_escHtml(opening)}</p><p style="color:#888;font-size:12px">This resets at the start of your next billing cycle. Upgrade your plan from your dashboard for more headroom now.</p>`,
       });
     }
   } catch (e) {

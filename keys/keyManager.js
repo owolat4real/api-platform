@@ -20,6 +20,8 @@ function _canonicalDomain(val, fallback) {
 }
 const PORTAL_URL = _canonicalDomain(process.env.PORTAL_URL, 'https://careerstudiomax.com');
 
+function _escHtml(s) { return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
 // Renamed 2026-08-19 (same directive as Transformer's rename in
 // cs_fixed/routes/transformer.js): cs-haiku/cs-sonnet/cs-opus ->
 // cs-adeife/cs-ademide/cs-demilade. This `models` array is informational
@@ -96,6 +98,23 @@ async function sendWelcomeEmail(developerId, apiKey, tier) {
       port: Number(process.env.SMTP_PORT) || 587,
       auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
     });
+
+    // Real, live-caught gap (2026-09-08): this email was 100% static,
+    // identical text for every signup. Now composed fresh per send by
+    // this service's own AI (services/aiCompose.js) -- see that file's
+    // header for why this doesn't call into cs_fixed's AI gateway
+    // instead, and why the real API key below is never handed to the AI
+    // to reproduce (it stays exactly where it was, in a deterministic
+    // <pre> block the AI never touches). Falls back to the exact
+    // original static sentence if DEVCLOUD_GROQ_API_KEY isn't set or the
+    // call fails -- never blocks this email.
+    const { composeOpeningLine } = require('../services/aiCompose');
+    const opening = await composeOpeningLine({
+      task: `Welcome a brand-new developer who just signed up and got their first API key, on the ${tier} tier.`,
+      facts: `Developer name: ${dev.name}\nTier: ${tier}\nPlatform: CareerStudioMax Developer Cloud`,
+      staticFallback: `Welcome to CareerStudioMax Developer Cloud, ${dev.name}! Your ${tier} API key is shown once only, store it now:`,
+    });
+
     await transport.sendMail({
       from:    _canonicalDomain(process.env.EMAIL_FROM, 'CareerStudioMax Developer Cloud <api@careerstudiomax.com>'),
       to:      dev.email,
@@ -103,7 +122,7 @@ async function sendWelcomeEmail(developerId, apiKey, tier) {
       html: `
         <div style="font-family:system-ui,sans-serif;max-width:520px;margin:0 auto;color:#1a1a2e">
           <h2 style="color:#6366f1">Welcome to CareerStudioMax Developer Cloud, ${dev.name}!</h2>
-          <p>Your <strong>${tier}</strong> API key — shown once only, store it now:</p>
+          <p>${_escHtml(opening)}</p>
           <pre style="background:#f5f5f5;padding:14px;border-radius:6px;font-size:13px;word-break:break-all">${apiKey}</pre>
           <h3>Get started in 60 seconds</h3>
           <pre style="background:#0d1117;color:#e2e8f0;padding:14px;border-radius:6px;font-size:13px">npm install careerlm
