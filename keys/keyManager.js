@@ -121,7 +121,7 @@ async function sendWelcomeEmail(developerId, apiKey, tier) {
       subject: 'Your CareerStudioMax Developer Cloud API key is ready',
       html: `
         <div style="font-family:system-ui,sans-serif;max-width:520px;margin:0 auto;color:#1a1a2e">
-          <h2 style="color:#6366f1">Welcome to CareerStudioMax Developer Cloud, ${dev.name}!</h2>
+          <h2 style="color:#6366f1">Welcome to CareerStudioMax Developer Cloud, ${_escHtml(dev.name)}!</h2>
           <p>${_escHtml(opening)}</p>
           <pre style="background:#f5f5f5;padding:14px;border-radius:6px;font-size:13px;word-break:break-all">${apiKey}</pre>
           <h3>Get started in 60 seconds</h3>
