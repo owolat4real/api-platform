@@ -46,7 +46,10 @@ async function authMiddleware(req, res, next) {
     const tokens   = res.locals.tokensUsed || 0;
     const model    = res.locals.modelUsed  || 'unknown';
     const feature  = req.path.replace(/^\//, '').replace(/\//g, '_');
-    KeyManager.recordUsage(req.keyHash, tokens, model, feature).catch(() => {});
+    // req.id/res.statusCode threaded through (2026-09-14) so the
+    // dashboard's recent-calls table can show a real request ID and
+    // status per call -- see KeyManager.recordUsage's own header comment.
+    KeyManager.recordUsage(req.keyHash, tokens, model, feature, req.id || null, res.statusCode).catch(() => {});
   });
 
   next();

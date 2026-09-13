@@ -316,7 +316,15 @@ class KeyManager {
   }
 
   /* ── RECORD USAGE ─────────────────────────────────────────── */
-  static async recordUsage(keyHash, tokens, model, featureId) {
+  // requestId/status added (2026-09-14) -- a prior audit found the
+  // dashboard's "recent calls" table trying to read c.status/c.endpoint/
+  // c.tokens_used/c.created_at, none of which this document ever wrote
+  // (real fields were ts/model/featureId/tokens, status was never
+  // recorded at all) -- every historical row rendered as all dashes
+  // except the model column, which happened to share its field name by
+  // coincidence. Both params are optional so existing callers (and any
+  // future ones that don't have a request id/status handy) keep working.
+  static async recordUsage(keyHash, tokens, model, featureId, requestId = null, status = null) {
     if (!keyHash) return;
     try {
       const db = getDB();
@@ -327,7 +335,7 @@ class KeyManager {
           $set: { lastUsedAt: new Date() },
           $push: {
             recentCalls: {
-              $each:  [{ ts: Date.now(), model, featureId, tokens }],
+              $each:  [{ ts: Date.now(), model, featureId, tokens, requestId, status }],
               $slice: -100,
             },
           },

@@ -15,10 +15,12 @@ info:
     url: https://careerstudiomax.com/api/docs
 
 servers:
+  # localhost removed (2026-09-14) -- Developer Cloud isn't distributed
+  # for external developers to run locally, so a local-dev server entry
+  # provides no real integration value on the PUBLIC spec (internal
+  # engineering docs can keep it separately).
   - url: https://careerlm-api.careerstudiomax.com/v1
     description: Production
-  - url: http://localhost:3005/v1
-    description: Local development
 
 security:
   - ApiKeyAuth: []
