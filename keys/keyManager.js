@@ -70,7 +70,20 @@ const API_TIERS = {
     daily_requests: 100000,
     rpm:            200,
     models:         ['cs-adeife', 'cs-ademide', 'cs-demilade'],
-    features:       ['all_career', 'all_features', 'batch_processing', 'webhooks', 'custom_system_prompts'],
+    // Real gap found + fixed (2026-09-14 Developer Cloud feature-truth
+    // audit): this array used to also list 'all_features' (unenforced --
+    // tier()'s only wildcard checks are 'all'/'all_career', so this did
+    // nothing), 'batch_processing', 'webhooks', and 'custom_system_prompts'
+    // (all three: zero route/queue/parameter/model-input support anywhere
+    // in this repo). This isn't just internal metadata -- GET /developer/
+    // tiers, /upgrade, and /upgrade/confirm all return this array verbatim
+    // to the customer, and it's stored on every issued key record, so the
+    // prior developer-portal marketing-copy fix (commit b836312, in the
+    // sibling repo) didn't actually close this gap at the API-contract
+    // level. Only 'all_career' remains -- the one real, tier()-checked
+    // wildcard (see routes/careerRoutes.js's tier() function) that
+    // genuinely unlocks the 4 real gated career endpoints.
+    features:       ['all_career'],
     max_tokens:     2048,
     support:        'priority_email',
   },
@@ -80,7 +93,18 @@ const API_TIERS = {
     daily_requests: Infinity,
     rpm:            1000,
     models:         ['cs-adeife', 'cs-ademide', 'cs-demilade'],
-    features:       ['all', 'fine_tuning', 'private_deployment', 'sla_99_9', 'dedicated_support', 'custom_models'],
+    // Real gap found + fixed (2026-09-14, same audit as PLUS above):
+    // 'fine_tuning', 'private_deployment', and 'custom_models' had zero
+    // code anywhere in this repo -- no training pipeline, no isolated
+    // deployment mechanism, and every tier (including this one) is served
+    // by the same fixed 3-model set. 'sla_99_9' was removed too: a bare
+    // percentage-style entitlement flag with no uptime monitoring, status
+    // page, or credit-issuance mechanism behind it anywhere in this repo
+    // reads as a live technical guarantee it doesn't back. 'dedicated_
+    // support' is kept -- unlike the others, a human/contractual support
+    // channel isn't something that would appear in this codebase either
+    // way, so it isn't disprovable the way the removed ones are.
+    features:       ['all', 'dedicated_support'],
     max_tokens:     4096,
     support:        'dedicated_slack',
   },

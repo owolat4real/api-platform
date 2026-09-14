@@ -124,7 +124,14 @@ async function callEndpoint(spec, node, context, rawApiKey) {
     return resp.data;
   } catch (e) {
     if (e instanceof CQLUpstreamError) throw e;
-    throw new CQLUpstreamError(`could not reach the CareerStudioMax API: ${e.message}`, node.name, 'connection_error', 502);
+    // Real fix (2026-09-14 Developer Cloud feature-truth audit): e.message
+    // for a network-level axios failure (e.g. ECONNREFUSED) typically
+    // embeds SELF_BASE_URL's literal internal host:port -- that used to
+    // be interpolated straight into this error and returned verbatim to
+    // the external customer via routes/cqlRoutes.js. Logged server-side
+    // instead; the customer gets a generic, safe message.
+    console.error(`[cql-interpreter] internal call to ${node.name} failed:`, e.message);
+    throw new CQLUpstreamError('could not reach the CareerStudioMax API', node.name, 'connection_error', 502);
   }
 }
 
