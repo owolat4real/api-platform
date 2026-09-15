@@ -28,6 +28,19 @@ async function connect() {
     // per developer per calendar month, same yearMonth-document-per-month
     // pattern cs_fixed's Cstm2Usage already uses.
     _db.collection('dev_platform_token_usage').createIndex({ developerId: 1, yearMonth: 1 }, { unique: true }),
+    // Short-lived, single-use deletion capability (keys/keyManager.js's
+    // issueDeletionToken/consumeDeletionToken, 2026-09-16) -- see that
+    // file's own header comment for why this exists: Developer Cloud has
+    // no session/password account layer, only the API key itself, so once
+    // a key is revoked there is no way to re-authenticate as that
+    // developer to permanently delete its record. Minted once, at revoke
+    // time, while the key being revoked can still prove ownership one
+    // last time -- never a second permanent credential. TTL index means
+    // an unused token simply expires (the key just waits out the existing
+    // 90-day grace-period cleanup instead); unique on tokenHash so two
+    // tokens can never collide.
+    _db.collection('key_deletion_tokens').createIndex({ tokenHash: 1 }, { unique: true }),
+    _db.collection('key_deletion_tokens').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
   ]);
   return _db;
 }

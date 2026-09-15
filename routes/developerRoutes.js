@@ -158,16 +158,26 @@ router.post('/keys/:developerId/rotate', async (req, res) => {
   }
 });
 
-/* ── REVOKE / DELETE KEY ──────────────────────────────────────
+/* ── REVOKE / DELETE KEY (legacy overloaded route) ─────────────
    New (2026-08-28): this route already owned DELETE /keys/:developerId/:keyId
-   for revoking, so there's no free verb/path left to add a separate
+   for revoking, so there was no free verb/path left to add a separate
    permanent-delete route the way the other 4 platforms (CAMP, CSTM-2,
-   Transformer, CSVM) did. Instead this single endpoint now escalates:
-   an active key gets revoked (unchanged behavior), and calling it again
-   on an already-revoked key permanently deletes it (KeyManager.deleteKey,
-   which itself re-checks status==='revoked' as a real safety rail against
-   deleting a live key). Matches the "revoke first, then delete" two-step
-   UX already shipped on every other platform's dashboard. */
+   Transformer, CSVM) did. It escalates: an active key gets revoked
+   (unchanged behavior), and calling it again on an already-revoked key
+   permanently deletes it (KeyManager.deleteKey, which itself re-checks
+   status==='revoked').
+
+   Confirmed unreachable in practice (2026-09-16 audit): the escalation
+   branch requires _requireOwnKey to authenticate with the SAME key being
+   acted on, and KeyManager.validate() only ever accepts status:'active'
+   keys -- once revoked, nothing can re-authenticate as this developer to
+   reach it. Left exactly as-is (not removed -- an existing API client
+   could theoretically still call it against an active key to revoke, and
+   the escalation branch itself is provably no more reachable than before,
+   never less safe). The revoke branch below now ALSO issues a deletion
+   token -- see KeyManager.issueDeletionToken's own header comment -- so
+   the real, reachable delete path is DELETE /keys/:keyId below, which
+   needs no API key at all, just that token. */
 router.delete('/keys/:developerId/:keyId', async (req, res) => {
   if (!await _requireOwnKey(req, res)) return;
   const db = getDB();
@@ -193,7 +203,99 @@ router.delete('/keys/:developerId/:keyId', async (req, res) => {
     { $set: { status: 'revoked', revokedAt: new Date() } }
   );
   if (!result.matchedCount) return res.status(404).json({ error: { code: 'key_not_found', message: 'Key not found or not owned by this developer' } });
-  res.json({ status: 'revoked' });
+
+  // Minted here, not on a later request -- this is the last moment the
+  // caller has proven ownership via the key that's about to stop working.
+  // Shown once, exactly like the API key itself at creation; never logged.
+  const { token, expiresAt } = await KeyManager.issueDeletionToken(req.params.developerId, req.params.keyId);
+  res.json({ status: 'revoked', deletion_token: token, deletion_token_expires_at: expiresAt });
+
+  getAuditDB().collection('auditlogs').insertOne({
+    actorEmail: null, actorName: null, action: 'developer.apiplatform_key_revoked',
+    category: 'developer', resource: 'api_keys', resourceId: req.params.keyId,
+    detail: { developerId: req.params.developerId }, result: 'success',
+    createdAt: new Date(), updatedAt: new Date(),
+  }).catch(() => {});
+});
+
+/* ── DELETE (permanent) — reachable path ────────────────────────
+   New (2026-09-16): authorizes via a short-lived, single-use deletion
+   token (X-Deletion-Token header) instead of an API key, because the key
+   this operates on is by definition already revoked and can never
+   authenticate again (KeyManager.validate() enforces status:'active'
+   only -- see that function's own comment). The token carries its own
+   developerId/keyId, minted server-side at revoke time
+   (KeyManager.issueDeletionToken) -- neither is trusted from the URL or
+   any other caller-supplied value, so there is nothing here for a
+   browser to lie about. No :developerId in this path at all, unlike the
+   legacy route above -- ownership comes entirely from the token. */
+router.delete('/keys/:keyId', async (req, res) => {
+  const rawToken = req.headers['x-deletion-token'];
+  if (!rawToken) return res.status(401).json({ error: { code: 'missing_deletion_token', message: 'Include the deletion token from the revoke response in the X-Deletion-Token header' } });
+
+  const identity = await KeyManager.validateAndConsumeDeletionToken(rawToken);
+  if (!identity) return res.status(401).json({ error: { code: 'invalid_or_expired_deletion_token', message: 'This deletion token is invalid, already used, or expired. Revoke the key again to get a fresh one.' } });
+
+  // Defence in depth: the token is already scoped to one specific key, so
+  // this can only ever fail if the caller presents a token minted for a
+  // DIFFERENT key than the one named in the URL -- never an ownership
+  // check (that's already settled by the token itself), just a sanity
+  // check against a confused/stale client.
+  if (identity.keyId !== req.params.keyId) {
+    return res.status(404).json({ error: { code: 'key_not_found', message: 'Key not found' } });
+  }
+
+  try {
+    await KeyManager.deleteKey(identity.developerId, identity.keyId);
+  } catch (e) {
+    // key_still_active is impossible here (the token only exists because
+    // this key was just revoked), but key_not_found is real and expected
+    // if the key was already deleted by an earlier use, the 90-day
+    // cleanup job, or a concurrent request.
+    const status = e.code === 'key_not_found' ? 404 : 400;
+    return res.status(status).json({ error: { code: e.code || 'delete_failed', message: e.code === 'key_not_found' ? 'Key not found' : 'Could not delete key' } });
+  }
+
+  res.json({ status: 'deleted', keyId: identity.keyId });
+
+  getAuditDB().collection('auditlogs').insertOne({
+    actorEmail: null, actorName: null, action: 'developer.apiplatform_key_deleted',
+    category: 'developer', resource: 'api_keys', resourceId: identity.keyId,
+    detail: { developerId: identity.developerId }, result: 'success',
+    createdAt: new Date(), updatedAt: new Date(),
+  }).catch(() => {});
+});
+
+/* ── DELETION TOKEN, ON DEMAND (for an already-revoked key) ──────
+   New (2026-09-16): the revoke route above only ever hands back a
+   deletion token at the exact moment a key transitions active->revoked.
+   That covers revoking your one and only key, but not the more common
+   case: KeyManager.rotate() (used by POST /keys/:developerId/rotate)
+   revokes the OLD key while creating a new active one, so a developer
+   who rotates and comes back later still has a live active key to
+   authenticate with, but no token left for the now-stale revoked one.
+   This mints a fresh one on demand -- still gated by _requireOwnKey, so
+   it still requires proving CURRENT ownership of this developerId via a
+   presently-active key; the revoked key itself never authenticates
+   anything, here or anywhere else. Only ever issued for a key that is
+   already status:'revoked' -- an active key can't skip the revoke step
+   this way. */
+router.post('/keys/:developerId/:keyId/deletion-token', async (req, res) => {
+  if (!await _requireOwnKey(req, res)) return;
+  const db = getDB();
+  const { ObjectId } = require('mongodb');
+  let objectId;
+  try { objectId = new ObjectId(req.params.keyId); }
+  catch { return res.status(400).json({ error: { code: 'invalid_key_id', message: 'Invalid key id' } }); }
+
+  const existing = await db.collection('api_keys').findOne({ _id: objectId, developerId: req.params.developerId });
+  if (!existing) return res.status(404).json({ error: { code: 'key_not_found', message: 'Key not found or not owned by this developer' } });
+  if (existing.status !== 'revoked') {
+    return res.status(400).json({ error: { code: 'key_still_active', message: 'Revoke this key before requesting a deletion token' } });
+  }
+
+  const { token, expiresAt } = await KeyManager.issueDeletionToken(req.params.developerId, req.params.keyId);
+  res.json({ deletion_token: token, deletion_token_expires_at: expiresAt });
 });
 
 // Applies a paid-for tier to the developer + all their active keys — shared
@@ -419,6 +521,16 @@ router.get('/usage/:developerId', async (req, res) => {
       prefix:         k.prefix + '_v1_...hidden',
       createdAt:      k.createdAt,
       totalRequests:  k.totalRequests,
+    })),
+    // Additive: lets the dashboard show a revoked key with a "delete
+    // permanently" action. Never carries a hash/secret/deletion-token --
+    // the deletion token is only ever returned once, from the revoke
+    // response itself, and only to the request that performed the revoke.
+    revoked_keys: keys.filter(k => k.status === 'revoked').map(k => ({
+      _id:            k._id,
+      name:           k.name,
+      prefix:         k.prefix + '_v1_...hidden',
+      revokedAt:      k.revokedAt,
     })),
     tier:        activeKey?.tier    || 'FREE',
     daily_limit: dailyLimit,

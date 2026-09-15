@@ -461,6 +461,61 @@ class KeyManager {
     await db.collection('api_keys').deleteOne({ _id: key._id });
   }
 
+  /* ── DELETION TOKEN (bridges revoke -> delete without a second
+     permanent secret) ──────────────────────────────────────────────
+     New (2026-09-16): Developer Cloud has no session/password account
+     layer -- the API key IS the only credential, for both real workload
+     calls and dashboard access (_requireOwnKey in developerRoutes.js
+     authenticates by validating that same raw key). KeyManager.validate()
+     only ever accepts status:'active' keys (by design -- a revoked
+     credential must never authenticate again), so once a key is revoked
+     there is no way to re-present it to reach the delete-escalation
+     branch of DELETE /keys/:developerId/:keyId -- confirmed unreachable
+     from the real dashboard.
+
+     Fix: mint a short-lived, single-use, narrowly-scoped token AT REVOKE
+     TIME, while the key being revoked can still prove ownership one last
+     time (the same _requireOwnKey check that already gates the revoke
+     call). This is NOT a second permanent secret -- it authorizes exactly
+     one action (deleting this one already-revoked key), expires quickly
+     (default 30 minutes) whether used or not, and is consumed
+     (deleted) the instant it's used. If it's lost or expires unused, the
+     key simply waits out the existing 90-day grace-period cleanup
+     instead -- no new permanent state, no new way to reconstruct access.
+     Hashed at rest (SHA-256, same convention as API keys themselves) --
+     only ever compared, never returned or logged after minting. */
+  static async issueDeletionToken(developerId, keyId) {
+    const db = getDB();
+    const rawToken  = crypto.randomBytes(32).toString('hex'); // 64 hex chars
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const ttlMinutes = Number(process.env.KEY_DELETION_TOKEN_TTL_MINUTES) || 30;
+    const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
+    await db.collection('key_deletion_tokens').insertOne({
+      tokenHash, developerId, keyId: String(keyId), createdAt: new Date(), expiresAt,
+    });
+    return { token: rawToken, expiresAt };
+  }
+
+  // Validates AND consumes in one call -- a deletion token authorizes
+  // exactly one deletion, never a second use even if the caller retries
+  // with the same value. Returns { developerId, keyId } (the identity the
+  // TOKEN carries, not anything the caller supplied) or null. Never
+  // throws on a missing/expired/garbage token -- the caller decides how
+  // to respond (401), same fail-closed contract as KeyManager.validate().
+  static async validateAndConsumeDeletionToken(rawToken) {
+    if (!rawToken || typeof rawToken !== 'string') return null;
+    const db = getDB();
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    // findOneAndDelete is atomic -- two concurrent requests presenting the
+    // exact same token can never both "win" a live document to act on,
+    // unlike a separate findOne-then-deleteOne pair would allow.
+    const record = await db.collection('key_deletion_tokens').findOneAndDelete({
+      tokenHash, expiresAt: { $gt: new Date() },
+    });
+    if (!record) return null;
+    return { developerId: record.developerId, keyId: record.keyId };
+  }
+
   /* ── CLEANUP (grace-period auto-delete) ──────────────────────────
      Innovation on top of deleteKey above (2026-08-28): manual delete only
      ever runs if a developer comes back and clicks it -- a revoked key

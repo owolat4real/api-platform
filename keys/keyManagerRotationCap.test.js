@@ -16,6 +16,20 @@
  * and keyManager.test.js already do -- reassign the cached CommonJS
  * export, then require keyManager.js fresh so it destructures the mock.
  *
+ * Fixed 2026-09-16 (stale fixture, found during the Developer Cloud
+ * delete-reachability task): rotate() started using client.startSession()
+ * + session.withTransaction(...) on 2026-09-08 (see keyManager.js's own
+ * "Real gap closed" comment on rotate(), db/connection.js's getClient())
+ * so the new key and the old key's revocation commit atomically. This
+ * file's fakeDb() only ever mocked getDB() -- getClient() was left
+ * completely unmocked, so every real MongoClient.startSession() call hit
+ * db/connection.js's real getClient(), which throws "Database not
+ * connected" outside a real Mongo process. This is a stale-test-fixture
+ * gap only: the assertions themselves (cap enforcement, revoke-on-
+ * rotate, live-environment default) were never wrong and are unchanged
+ * below -- fakeClient() just gives the transaction machinery something to
+ * call so the code under test can actually run.
+ *
  * Run: node --test keys/keyManagerRotationCap.test.js
  */
 const test = require('node:test');
@@ -35,6 +49,20 @@ function fakeDb(overrides = {}) {
   return { collection: (name) => collections[name] };
 }
 
+// A minimal stand-in for the real MongoClient session API rotate() drives:
+// startSession() -> { withTransaction(fn), endSession() }. withTransaction
+// just awaits and runs the callback directly -- no real cross-document
+// atomicity is meaningful against an in-memory fake collection, so there's
+// nothing to simulate beyond "the callback actually executes".
+function fakeClient() {
+  return {
+    startSession: () => ({
+      withTransaction: async (fn) => fn(),
+      endSession: async () => {},
+    }),
+  };
+}
+
 function loadFresh() {
   delete require.cache[require.resolve('./keyManager')];
   delete require.cache[require.resolve('./devPlatformQuota')];
@@ -43,6 +71,7 @@ function loadFresh() {
 
 test('rotate — under the cap, rotation succeeds and revokes the old key', async (t) => {
   const originalGetDB = dbConnection.getDB;
+  const originalGetClient = dbConnection.getClient;
   const oldKey = { keyHash: 'old_hash', developerId: 'dev_1', tier: 'FREE', name: 'My Key', metadata: {} };
   let revokedFilter = null;
   let inserted = null;
@@ -52,7 +81,8 @@ test('rotate — under the cap, rotation succeeds and revokes the old key', asyn
     insertOne: async (doc) => { inserted = doc; return { acknowledged: true }; },
     updateOne: async (filter) => { revokedFilter = filter; return { acknowledged: true }; },
   });
-  t.after(() => { dbConnection.getDB = originalGetDB; });
+  dbConnection.getClient = fakeClient;
+  t.after(() => { dbConnection.getDB = originalGetDB; dbConnection.getClient = originalGetClient; });
 
   const KeyManager = loadFresh();
   const result = await KeyManager.rotate('old_hash', 'dev_1');
@@ -69,6 +99,7 @@ test('rotate — under the cap, rotation succeeds and revokes the old key', asyn
    blocked from rotating again, not given an unconditional pass. */
 test('CRITICAL REGRESSION: rotate — blocked once the free-tier monthly cap is already reached, no longer an unconditional bypass', async (t) => {
   const originalGetDB = dbConnection.getDB;
+  const originalGetClient = dbConnection.getClient;
   const oldKey = { keyHash: 'old_hash', developerId: 'dev_1', tier: 'FREE', name: 'My Key', metadata: {} };
   let insertCalled = false;
   dbConnection.getDB = () => fakeDb({
@@ -76,7 +107,8 @@ test('CRITICAL REGRESSION: rotate — blocked once the free-tier monthly cap is 
     countDocuments: async () => 5, // already at the real cap this month
     insertOne: async () => { insertCalled = true; return { acknowledged: true }; },
   });
-  t.after(() => { dbConnection.getDB = originalGetDB; });
+  dbConnection.getClient = fakeClient;
+  t.after(() => { dbConnection.getDB = originalGetDB; dbConnection.getClient = originalGetClient; });
 
   const KeyManager = loadFresh();
   await assert.rejects(
@@ -88,6 +120,7 @@ test('CRITICAL REGRESSION: rotate — blocked once the free-tier monthly cap is 
 
 test('rotate — a rotated key is created with environment defaulting to "live", so it is correctly counted by the live-only cap filter', async (t) => {
   const originalGetDB = dbConnection.getDB;
+  const originalGetClient = dbConnection.getClient;
   const oldKey = { keyHash: 'old_hash', developerId: 'dev_1', tier: 'FREE', name: 'My Key', metadata: {} };
   let inserted = null;
   dbConnection.getDB = () => fakeDb({
@@ -95,7 +128,8 @@ test('rotate — a rotated key is created with environment defaulting to "live",
     countDocuments: async () => 0,
     insertOne: async (doc) => { inserted = doc; return { acknowledged: true }; },
   });
-  t.after(() => { dbConnection.getDB = originalGetDB; });
+  dbConnection.getClient = fakeClient;
+  t.after(() => { dbConnection.getDB = originalGetDB; dbConnection.getClient = originalGetClient; });
 
   const KeyManager = loadFresh();
   await KeyManager.rotate('old_hash', 'dev_1');
