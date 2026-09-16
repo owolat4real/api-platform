@@ -5,6 +5,13 @@
  * Developers interact with this service only — never the internal gateway.
  */
 require('dotenv').config();
+// Must run before anything below reads process.env (route modules read
+// STRIPE_SECRET_KEY/STRIPE_WEBHOOK_SECRET/MONGODB_URI at require-time) --
+// see config/validateEnv.js's own header for why this exists and what it
+// deliberately does NOT change (db/connection.js's existing tolerance of
+// a transient connection failure at runtime is untouched; this only
+// catches a missing/placeholder credential at boot).
+require('./config/validateEnv')();
 
 const express    = require('express');
 const helmet     = require('helmet');

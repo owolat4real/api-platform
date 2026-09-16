@@ -5,10 +5,25 @@ services:
     buildCommand: npm install
     startCommand: node server.js
     healthCheckPath: /health
-    # No CI gate exists for this repo yet (unlike cs_fixed's — see its own
-    # render.yaml comment), so plain push-to-deploy is the right default
-    # here rather than disabling autoDeploy with nothing to re-enable it.
-    autoDeploy: true
+    # 2026-09-16 (Developer Cloud hardening PASS 3): this repo now has a
+    # real CI gate (.github/workflows/ci.yml) -- a syntax-check + the full
+    # test suite (security/billing/idempotency/graceful-shutdown/env-
+    # validation) + a real startup smoke test must all succeed before the
+    # workflow's own `deploy` job calls Render's deploy hook. Flipped to
+    # false to match: plain push-to-deploy is no longer the right default
+    # now that something real exists to gate on.
+    #
+    # IMPORTANT — this Blueprint value alone is NOT sufficient. The same
+    # class of gap cs_fixed's own render.yaml documents for its two
+    # services applies here too: Render does not reliably propagate a
+    # render.yaml change to an ALREADY-CREATED live service's own
+    # dashboard Auto-Deploy toggle. A one-time manual step is still
+    # required: this service's Render dashboard -> Settings -> Build &
+    # Deploy -> Auto-Deploy -> Off. Until that's done, a push to master
+    # may still deploy immediately via the live service's own current
+    # setting, wholly independent of this file and of the new CI
+    # workflow's result.
+    autoDeploy: false
     envVars:
       - key: NODE_ENV
         value: production

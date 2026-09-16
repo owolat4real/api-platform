@@ -1,0 +1,152 @@
+name: CI
+
+# Real deploy gate (2026-09-16, Developer Cloud hardening PASS 3): this
+# repo had NO GitHub Actions workflow at all before this file -- a push to
+# master deployed to Render immediately via render.yaml's own
+# autoDeploy:true, wholly independent of whether the code even parsed.
+#
+# Now: the `test` job (syntax-check, env-doc gate, the full test suite --
+# Stripe webhook signature verification/idempotency/subscription-sync
+# ownership rules, graceful shutdown, env validation -- and a real
+# startup smoke test) must succeed before the `deploy` job below ever
+# runs, and that job is the ONLY thing calling Render's deploy hook.
+# render.yaml's autoDeploy has been set to false alongside this file (see
+# its own comment there for why).
+#
+# IMPORTANT -- render.yaml's value is Blueprint config only. Render does
+# not reliably propagate a Blueprint change to an ALREADY-CREATED live
+# service's own dashboard Auto-Deploy toggle (the same class of gap the
+# main CareerStudioMax repo's own .github/workflows/ci.yml documents
+# hitting for its two services). A one-time manual step is still required
+# in this service's own Render dashboard (Settings -> Build & Deploy ->
+# Auto-Deploy -> Off) before this workflow is genuinely the only deploy
+# trigger -- see this hardening pass's final report for the exact status.
+#
+# Required GitHub secret (name only -- create it in Settings -> Secrets
+# and variables -> Actions once the manual Render step above is done):
+#   RENDER_DEPLOY_HOOK_URL -- this service's Deploy Hook URL, from
+#   Render's dashboard -> this service -> Settings -> Deploy Hook. That
+#   URL already embeds Render's own generated auth token; treat it exactly
+#   like any other secret. Never commit the real value anywhere. Until
+#   this secret exists, the deploy job below detects that and skips
+#   cleanly rather than failing loudly on every push.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      # Disposable, auth-free CI-only container -- wiped every run. Not a
+      # production credential, and lets the startup smoke test below
+      # exercise a real Mongo-backed boot path instead of only the
+      # DB-independent static routes.
+      mongodb:
+        image: mongo:7
+        ports: ['27017:27017']
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand({ping:1})' --quiet"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      NODE_ENV: test
+      PORT: '3005'
+      MONGODB_URI: mongodb://127.0.0.1:27017/api_platform_ci_test
+      MONGODB_DB: api_platform_ci_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies (from lockfile)
+        run: npm ci
+
+      - name: Validate package.json
+        run: node -e "JSON.parse(require('fs').readFileSync('package.json','utf8')); console.log('package.json OK');"
+
+      - name: Syntax-check every tracked JS file
+        run: |
+          set -e
+          fail=0
+          while IFS= read -r -d '' f; do
+            if ! node -c "$f" 2>/tmp/err; then
+              echo "SYNTAX ERROR: $f"
+              cat /tmp/err
+              fail=1
+            fi
+          done < <(git ls-files -z -- '*.js' ':!:node_modules')
+          exit $fail
+
+      - name: Required production env vars are documented in render.yaml
+        run: node scripts/checkEnvDocumentation.js
+
+      # The full suite already includes the security/billing focus areas
+      # (Stripe webhook signature verification + fail-closed config +
+      # idempotency, subscription-sync ownership/price-integrity rules,
+      # graceful shutdown, env validation) -- see each test file's own
+      # header comment. NODE_ENV=test above (and test/setupTestEnv.js's
+      # own --require preload inside the npm test script itself) keeps
+      # config/validateEnv.js's production-only hard-fails from ever
+      # firing here, so none of this needs a real Stripe/production
+      # credential.
+      - name: Run full test suite
+        run: npm test
+
+      # Real startup smoke test -- boots the ACTUAL server.js (not a
+      # mock), against the disposable Mongo container above, with no
+      # Stripe credentials configured at all (STRIPE_SECRET_KEY unset ->
+      # billing-dependent routes correctly 503 rather than crash, per
+      # their own existing design) and confirms /health plus two public,
+      # no-auth, no-DB-mutation endpoints actually respond. Never mutates
+      # any real state and never touches production Mongo/Stripe/Render.
+      - name: Startup smoke — boot the real server and verify it answers
+        run: |
+          set -e
+          nohup node server.js > server.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3005/health > /dev/null; then echo "Healthy after $i attempt(s)"; break; fi
+            echo "Waiting for /health... ($i/30)"; sleep 1
+          done
+          curl -sf http://localhost:3005/health || (echo "Server never became healthy"; cat server.log; exit 1)
+          echo "--- /health ---"
+          curl -sf http://localhost:3005/health
+          echo ""
+          echo "--- /v1/developer/tiers (public, no DB/Stripe required) ---"
+          curl -sf http://localhost:3005/v1/developer/tiers > /dev/null || (echo "/tiers failed"; cat server.log; exit 1)
+          echo "--- /v1/developer/stripe-config (public) ---"
+          curl -sf http://localhost:3005/v1/developer/stripe-config > /dev/null || (echo "/stripe-config failed"; cat server.log; exit 1)
+          echo "Startup smoke passed"
+
+      - name: Server log (always shown for debugging)
+        if: always()
+        run: cat server.log || true
+
+  # Only runs on an actual push to master (never on a pull_request — a PR
+  # from a fork must never be able to trigger a production deploy), and
+  # only after the `test` job above succeeds. If it fails, this job is
+  # skipped entirely (GitHub Actions default for `needs:`), so the
+  # service never redeploys.
+  deploy:
+    needs: [test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render deploy — careerstudiomax-api-platform
+        run: |
+          if [ -z "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" ]; then
+            echo "RENDER_DEPLOY_HOOK_URL secret is not set yet -- skipping deploy trigger."
+            echo "Add it in Settings -> Secrets and variables -> Actions once this service's Render dashboard Auto-Deploy has been switched off (see render.yaml's own comment)."
+            exit 0
+          fi
+          curl -sf -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" \
+          || (echo "Failed to trigger careerstudiomax-api-platform deploy"; exit 1)
