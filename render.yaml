@@ -64,3 +64,10 @@ services:
         sync: false
       - key: STRIPE_PRICE_ENTERPRISE
         sync: false
+      # Signing secret for the Stripe webhook endpoint (routes/stripeWebhook.js,
+      # POST /v1/developer/stripe/webhook) -- 2026-09-16 hardening pass.
+      # Get the real value from the Stripe Dashboard -> Developers ->
+      # Webhooks -> (this endpoint) -> Signing secret, and set it directly
+      # in Render's dashboard. Never commit the real value anywhere.
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false

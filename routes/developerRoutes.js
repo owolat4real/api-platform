@@ -569,4 +569,16 @@ router.get('/stripe-config', (req, res) => {
   });
 });
 
+// Exposed for routes/stripeWebhook.js (2026-09-16 hardening pass) so the
+// webhook handler applies entitlements through the exact same function
+// (and the exact same, possibly-auto-created-at-boot STRIPE_PRICE_IDS
+// object -- a fresh copy would miss any price ID minted by
+// ensureStripePrices() above) that /upgrade and /upgrade/confirm already
+// use, rather than a second, drift-prone reimplementation. An Express
+// Router is just a function -- attaching extra properties to it doesn't
+// change how app.use() consumes it as middleware, same pattern this
+// codebase's other routers already use for test-only internals.
+router._applyTierUpgrade = _applyTierUpgrade;
+router._STRIPE_PRICE_IDS = STRIPE_PRICE_IDS;
+
 module.exports = router;

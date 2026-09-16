@@ -25,8 +25,18 @@ app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({
   origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
   methods: ['GET', 'POST', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'X-Api-Key', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'X-Api-Key', 'Authorization', 'Stripe-Signature'],
 }));
+
+// Stripe webhook (2026-09-16 hardening pass) -- MUST be mounted here,
+// before the global express.json() below: stripe.webhooks.constructEvent()
+// needs the exact raw request body bytes to verify the HMAC signature,
+// and once express.json() has parsed a request's body into an object
+// those bytes are gone. Only this one exact path gets express.raw()
+// instead of JSON parsing; every other route is unaffected. See
+// routes/stripeWebhook.js for the actual handler.
+app.post('/v1/developer/stripe/webhook', express.raw({ type: 'application/json' }), require('./routes/stripeWebhook'));
+
 app.use(express.json({ limit: '10mb' }));
 app.use(morgan('combined', { skip: (req) => req.url === '/health' }));
 
@@ -174,6 +184,72 @@ app.use((error, req, res, _next) => {
   });
 });
 
+// ── Graceful shutdown (2026-09-16 hardening pass) ───────────
+// Previously absent entirely -- a container stop (Render redeploy, scale-
+// down, etc.) would hard-kill this process mid-request. Mirrors the
+// pattern cs_fixed's own server.js already uses: stop accepting new
+// connections, let in-flight ones finish within a bounded window, close
+// Mongo cleanly, then exit -- with a forced-exit fallback so a stuck
+// connection can never hang the process indefinitely.
+//
+// `deps` is injected (defaulting to the real disconnect/exit/setTimeout)
+// so tests can exercise the full sequence -- including the forced-exit
+// timeout path -- without requiring a real MongoDB connection or actually
+// calling process.exit() and killing the test runner.
+const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 10000;
+
+function createShutdownHandler(server, deps = {}) {
+  const {
+    disconnect = require('./db/connection').disconnect,
+    exit = (code) => process.exit(code),
+    timeoutMs = GRACEFUL_SHUTDOWN_TIMEOUT_MS,
+    setTimeoutFn = setTimeout,
+    clearTimeoutFn = clearTimeout,
+  } = deps;
+  let shuttingDown = false;
+
+  return async function shutdown(signal) {
+    // Guards against SIGTERM immediately followed by SIGINT (or the same
+    // signal delivered twice, which some process managers do) running
+    // this whole sequence -- and therefore exit() -- more than once.
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n[shutdown] ${signal} received -- closing gracefully...`);
+
+    const forceExitTimer = setTimeoutFn(() => {
+      console.error('[shutdown] graceful close timed out -- forcing exit');
+      exit(1);
+    }, timeoutMs);
+    forceExitTimer.unref?.();
+
+    try {
+      // server.close() stops accepting NEW connections immediately but
+      // waits for in-flight requests to finish before its callback fires.
+      await new Promise((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+      console.log('[shutdown] HTTP server closed');
+
+      await disconnect();
+      console.log('[shutdown] MongoDB connection closed');
+
+      clearTimeoutFn(forceExitTimer);
+      exit(0);
+    } catch (e) {
+      console.error('[shutdown] error during graceful shutdown:', e.message);
+      clearTimeoutFn(forceExitTimer);
+      exit(1);
+    }
+  };
+}
+
+function _wireGracefulShutdown(server, deps) {
+  const shutdown = createShutdownHandler(server, deps);
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  return shutdown;
+}
+
 // ── Boot ───────────────────────────────────────────────────
 async function boot() {
   console.log('\n╔══════════════════════════════════════════════════╗');
@@ -188,11 +264,12 @@ async function boot() {
     console.warn('     API will start but /register and auth will fail until DB is available');
   }
 
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`\n  🚀 CareerStudioMax Developer Cloud → http://localhost:${PORT}`);
     console.log(`  📋 Register:   POST http://localhost:${PORT}/v1/developer/register`);
     console.log(`  📖 Docs:       https://careerstudiomax.com/api/docs\n`);
   });
+  _wireGracefulShutdown(server);
 
   // Revoked API Key Cleanup (2026-08-28) -- same grace-period auto-delete
   // as cs_fixed's jobs/revokedKeyCleanup.js, adapted to this service's
@@ -214,4 +291,16 @@ async function boot() {
   setInterval(runKeyCleanup, 24 * 60 * 60 * 1000);
 }
 
-boot().catch(e => { console.error('Boot failed:', e.message); process.exit(1); });
+// Only auto-boot (bind a real port, connect to real Mongo, register real
+// process signal handlers) when this file is run directly (`node
+// server.js` / `npm start`) -- not when required as a module, e.g. by a
+// future test that wants app/createShutdownHandler without any of boot()'s
+// side effects. No existing test currently requires this file (each test
+// builds its own minimal Express app around the individual route
+// modules), so this is a safety guard for future use, not a fix for a
+// live problem today.
+if (require.main === module) {
+  boot().catch(e => { console.error('Boot failed:', e.message); process.exit(1); });
+}
+
+module.exports = { app, boot, createShutdownHandler, _wireGracefulShutdown };

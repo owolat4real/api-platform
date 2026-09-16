@@ -41,6 +41,14 @@ async function connect() {
     // tokens can never collide.
     _db.collection('key_deletion_tokens').createIndex({ tokenHash: 1 }, { unique: true }),
     _db.collection('key_deletion_tokens').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+    // Stripe webhook idempotency (routes/stripeWebhook.js, 2026-09-16) --
+    // unique on eventId so two concurrent deliveries of the same Stripe
+    // event can only ever have one insert succeed; the other hits this
+    // index's duplicate-key error and is treated as an already-handled
+    // duplicate rather than reprocessed. 60-day TTL is generous next to
+    // Stripe's own webhook retry window (up to 3 days).
+    _db.collection('webhook_events').createIndex({ eventId: 1 }, { unique: true }),
+    _db.collection('webhook_events').createIndex({ createdAt: 1 }, { expireAfterSeconds: 60 * 24 * 60 * 60 }),
   ]);
   return _db;
 }
